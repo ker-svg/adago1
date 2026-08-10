@@ -1,24 +1,27 @@
 <template>
   <div class="auth-screen">
     <div class="auth-card">
-      <div class="brand-chip">AdaGo</div>
-      <h1 class="title">Giriş yap</h1>
-      <p class="subtitle">Hesabınla yolculuğa devam et.</p>
+      <div class="brand-chip">AdaGo Admin</div>
+      <h1 class="title">Yönetici girişi</h1>
+      <p class="subtitle">
+        Supabase Auth hesabınla giriş yap. Admin yetkisi veritabanında
+        <code>profiles.role = admin</code> olmalıdır.
+      </p>
 
-      <label class="field-label" for="login-email">E-posta</label>
+      <label class="field-label" for="admin-email">E-posta</label>
       <input
-        id="login-email"
+        id="admin-email"
         v-model="email"
         class="field-input"
         type="email"
-        autocomplete="email"
-        placeholder="ornek@mail.com"
+        autocomplete="username"
+        placeholder="admin@ornek.com"
         @keyup.enter="handleSubmit"
       />
 
-      <label class="field-label" for="login-password">Şifre</label>
+      <label class="field-label" for="admin-password">Şifre</label>
       <input
-        id="login-password"
+        id="admin-password"
         v-model="password"
         class="field-input"
         type="password"
@@ -36,15 +39,11 @@
         @click="handleSubmit"
       >
         <span v-if="busy" class="spinner" aria-hidden="true" />
-        {{ busy ? 'Giriş yapılıyor...' : 'Giriş Yap' }}
+        {{ busy ? 'Giriş yapılıyor...' : 'Admin Girişi' }}
       </button>
 
-      <button type="button" class="link-btn" @click="router.push('/register')">
-        Hesabın yok mu? Kayıt ol
-      </button>
-
-      <button type="button" class="link-btn admin-link" @click="router.push('/admin/login')">
-        Admin Paneli
+      <button type="button" class="link-btn" @click="router.push('/login')">
+        Yolcu / sürücü girişi
       </button>
     </div>
   </div>
@@ -52,11 +51,10 @@
 
 <script setup>
 import { ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 
 const router = useRouter()
-const route = useRoute()
 const authStore = useAuthStore()
 
 const email = ref('')
@@ -80,18 +78,14 @@ async function handleSubmit() {
       password: password.value,
     })
 
-    if (!authStore.currentRole) {
+    if (authStore.currentRole !== 'admin') {
       errorMessage.value =
-        'Giriş oldu ama profil/rol bulunamadı. Supabase profiles tablosunu kontrol et.'
+        'Bu hesap admin değil. Admin yetkisi yalnızca veritabanında atanır.'
+      await authStore.signOut()
       return
     }
 
-    const redirect =
-      typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
-        ? route.query.redirect
-        : authStore.panelPathForRole()
-
-    await router.replace(redirect)
+    await router.replace('/admin')
   } catch (err) {
     errorMessage.value = err.message || 'Giriş başarısız.'
   } finally {
@@ -105,15 +99,19 @@ async function handleSubmit() {
   min-height: calc(100dvh - 56px);
   display: grid;
   place-items: center;
-  padding: 20px;
-  background: linear-gradient(180deg, #eef3f5, #f8fafb);
+  padding: 24px 16px;
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(16, 185, 129, 0.12), transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(10, 22, 40, 0.08), transparent 45%),
+    #f3f5f6;
 }
 
 .auth-card {
-  width: min(420px, 100%);
+  width: 100%;
+  max-width: 420px;
+  padding: 28px 24px;
+  border-radius: 20px;
   background: #fff;
-  border-radius: 24px;
-  padding: 28px 22px 22px;
   box-shadow: 0 16px 40px rgba(10, 22, 40, 0.08);
 }
 
@@ -121,15 +119,16 @@ async function handleSubmit() {
   display: inline-flex;
   padding: 6px 12px;
   border-radius: 999px;
-  background: #d1fae5;
-  color: #065f46;
+  background: #0a1628;
+  color: #10b981;
   font-weight: 800;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
+  letter-spacing: -0.02em;
   margin-bottom: 14px;
 }
 
 .title {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-size: 1.55rem;
   font-weight: 800;
   letter-spacing: -0.03em;
@@ -138,8 +137,16 @@ async function handleSubmit() {
 
 .subtitle {
   margin: 0 0 20px;
-  color: #64748b;
-  font-size: 0.95rem;
+  color: #5a6a72;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.subtitle code {
+  font-size: 0.8rem;
+  background: #f3f5f6;
+  padding: 1px 6px;
+  border-radius: 6px;
 }
 
 .field-label {
@@ -147,26 +154,22 @@ async function handleSubmit() {
   margin: 0 0 6px;
   font-size: 0.82rem;
   font-weight: 700;
-  color: #334155;
+  color: #0a1628;
 }
 
 .field-input {
   width: 100%;
-  box-sizing: border-box;
   margin-bottom: 14px;
-  padding: 14px 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  background: #f8fafc;
-  color: #0a1628;
-  font: inherit;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
   font-size: 0.95rem;
   outline: none;
+  background: #f9fafb;
 }
 
 .field-input:focus {
   border-color: #10b981;
-  background: #fff;
   box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
 }
 
@@ -177,49 +180,37 @@ async function handleSubmit() {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 48px;
+  padding: 14px;
   border: 0;
   border-radius: 14px;
   background: #0a1628;
   color: #fff;
-  font: inherit;
-  font-size: 1rem;
   font-weight: 700;
+  font-size: 0.95rem;
   cursor: pointer;
 }
 
 .primary-btn:disabled {
   opacity: 0.7;
-  cursor: wait;
-}
-
-.primary-btn:hover:not(:disabled) {
-  background: #134e4a;
+  cursor: not-allowed;
 }
 
 .link-btn {
+  display: block;
   width: 100%;
-  margin-top: 12px;
+  margin-top: 14px;
   border: 0;
   background: transparent;
-  color: #0a1628;
-  font: inherit;
-  font-size: 0.9rem;
-  font-weight: 700;
-  cursor: pointer;
-  padding: 10px;
-}
-
-.admin-link {
   color: #5a6a72;
   font-weight: 600;
-  font-size: 0.82rem;
+  font-size: 0.88rem;
+  cursor: pointer;
 }
 
 .error-text {
-  margin: 0 0 10px;
   color: #c62828;
   font-size: 0.85rem;
+  margin: 0 0 10px;
 }
 
 .spinner {

@@ -33,13 +33,17 @@ import { useAuthStore } from '@/stores/authStore'
 const router = useRouter()
 const authStore = useAuthStore()
 
-const roleLabel = computed(() =>
-  authStore.currentRole === 'driver' ? 'Sürücü' : 'Yolcu',
-)
+const roleLabel = computed(() => {
+  if (authStore.currentRole === 'driver') return 'Sürücü'
+  if (authStore.currentRole === 'admin') return 'Admin'
+  return 'Yolcu'
+})
 
-const panelButtonLabel = computed(() =>
-  authStore.currentRole === 'driver' ? 'Sürücü paneline git' : 'Yolcu paneline git',
-)
+const panelButtonLabel = computed(() => {
+  if (authStore.currentRole === 'driver') return 'Sürücü paneline git'
+  if (authStore.currentRole === 'admin') return 'Admin paneline git'
+  return 'Yolcu paneline git'
+})
 
 function goPanel() {
   router.push(authStore.panelPathForRole())

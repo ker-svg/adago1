@@ -71,6 +71,7 @@ const isMapPage = computed(() => Boolean(route.meta.mapPage))
 const roleLabel = computed(() => {
   if (authStore.currentRole === 'passenger') return 'Yolcu'
   if (authStore.currentRole === 'driver') return 'Sürücü'
+  if (authStore.currentRole === 'admin') return 'Admin'
   return ''
 })
 

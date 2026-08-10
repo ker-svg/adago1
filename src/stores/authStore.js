@@ -127,6 +127,8 @@ export const useAuthStore = defineStore('auth', () => {
             profile.value = null
             const { useDriverStore } = await import('@/stores/driverStore')
             useDriverStore().resetLocal()
+            const { useRideStore } = await import('@/stores/rideStore')
+            useRideStore().resetLocal()
           }
         })
       }
@@ -235,6 +237,8 @@ export const useAuthStore = defineStore('auth', () => {
       profile.value = null
       const { useDriverStore } = await import('@/stores/driverStore')
       useDriverStore().resetLocal()
+      const { useRideStore } = await import('@/stores/rideStore')
+      useRideStore().resetLocal()
     } catch (err) {
       errorMessage.value = err.message || 'Çıkış başarısız.'
       throw err
@@ -244,6 +248,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function panelPathForRole(role = currentRole.value) {
+    if (role === 'admin') return '/admin'
     if (role === 'driver') return '/driver'
     if (role === 'passenger') return '/passenger'
     if (user.value) return '/role'

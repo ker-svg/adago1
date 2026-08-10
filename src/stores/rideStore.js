@@ -1,90 +1,134 @@
 import { defineStore } from 'pinia'
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import {
   RIDE_STATUS,
   TRIP_PHASE,
   initialNearbyDrivers,
-  initialRides,
-  mockDriver,
 } from '@/data/mockData'
 import { calculateFare, estimateEtaMinutes, haversineKm } from '@/utils/fare'
+import { mapAuthError, supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import {
   qualifiesForPassengerMap,
   useDriverStore,
 } from '@/stores/driverStore'
 
-const STORAGE_KEY = 'adago-state-v1'
-
-/** Eski kayıtlardaki near-1 / Mehmet Demir kimliğini driver-1'e çevirir. */
-function normalizePersistedState(parsed) {
-  if (!parsed || !Array.isArray(parsed.rides)) return null
-
-  // nearbyDrivers LocalStorage'dan okunmaz (passenger haritasına sızmasın).
-  // Home/Driver demo için bellek içi initialNearbyDrivers kullanılır.
-
-  parsed.rides = parsed.rides.map((ride) => {
-    let next = ride
-
-    if (ride?.driverId === 'near-1' && ride?.driverName === 'Mehmet Demir') {
-      next = { ...next, driverId: 'driver-1' }
-    }
-
-    if (
-      ride?.assignedDriver?.id === 'near-1' &&
-      ride?.assignedDriver?.name === 'Mehmet Demir'
-    ) {
-      next = {
-        ...next,
-        assignedDriver: { ...ride.assignedDriver, id: 'driver-1' },
-      }
-    }
-
-    return next
-  })
-
-  return parsed
+const STATUS_FROM_DB = {
+  pending: RIDE_STATUS.PENDING,
+  accepted: RIDE_STATUS.ACCEPTED,
+  completed: RIDE_STATUS.COMPLETED,
+  cancelled: RIDE_STATUS.CANCELLED,
 }
 
-function loadPersistedState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw)
-    const normalized = normalizePersistedState(parsed)
-    if (normalized) {
-      // nearbyDrivers'ı kalıcı state'ten düşür — passenger map'e sızmasın
-      const rest = { ...normalized }
-      delete rest.nearbyDrivers
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(rest))
-      return rest
+const PHASE_FROM_DB = {
+  assigning: TRIP_PHASE.ASSIGNING,
+  en_route: TRIP_PHASE.EN_ROUTE,
+  in_progress: TRIP_PHASE.IN_PROGRESS,
+  completed: TRIP_PHASE.COMPLETED,
+}
+
+function numOrNull(value) {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function mapRideRow(row) {
+  if (!row) return null
+
+  const fromCoords =
+    row.from_lat != null && row.from_lng != null
+      ? { lat: Number(row.from_lat), lng: Number(row.from_lng) }
+      : null
+  const toCoords =
+    row.to_lat != null && row.to_lng != null
+      ? { lat: Number(row.to_lat), lng: Number(row.to_lng) }
+      : null
+
+  let route = []
+  if (Array.isArray(row.route)) {
+    route = row.route
+  } else if (typeof row.route === 'string') {
+    try {
+      route = JSON.parse(row.route)
+    } catch {
+      route = []
     }
-    return normalized
-  } catch {
-    return null
+  }
+
+  const estimatedFare = numOrNull(row.estimated_fare)
+  const grossFare = numOrNull(row.gross_fare)
+  const commissionAmount = numOrNull(row.commission_amount)
+  const driverNetAmount = numOrNull(row.driver_net_amount)
+  const commissionRate = numOrNull(row.commission_rate)
+
+  return {
+    id: row.id,
+    passengerId: row.passenger_id,
+    passengerName: row.passenger_name,
+    phone: row.passenger_phone || '',
+    from: row.from_label,
+    to: row.to_label,
+    fromCoords,
+    toCoords,
+    route: Array.isArray(route) ? route : [],
+    distanceKm: numOrNull(row.distance_km),
+    durationMin: numOrNull(row.duration_min),
+    estimatedFare,
+    fareBreakdown: estimatedFare != null
+      ? { amount: estimatedFare, currency: '₺', formatted: `${estimatedFare} ₺` }
+      : null,
+    assignedDriver: row.driver_id
+      ? {
+          id: row.driver_id,
+          name: row.driver_name || 'Sürücü',
+          rating: numOrNull(row.driver_rating) || 5,
+          vehicleType: row.driver_vehicle_type || '—',
+          etaMin: 5,
+        }
+      : null,
+    driverId: row.driver_id || null,
+    driverName: row.driver_name || null,
+    status: STATUS_FROM_DB[row.status] || row.status,
+    tripPhase: row.trip_phase ? PHASE_FROM_DB[row.trip_phase] || row.trip_phase : null,
+    grossFare,
+    commissionRate,
+    commissionAmount,
+    driverNetAmount,
+    commissionStatus: row.commission_status || null,
+    createdAt: row.created_at,
+    acceptedAt: row.accepted_at || null,
+    startedAt: row.started_at || null,
+    completedAt: row.completed_at || null,
+    cancelledAt: row.cancelled_at || null,
   }
 }
 
-function persistState(payload) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
-  } catch {
-    // ignore
+function upsertRideList(list, ride) {
+  if (!ride) return list
+  const idx = list.findIndex((item) => item.id === ride.id)
+  if (idx >= 0) {
+    const copy = list.slice()
+    copy[idx] = ride
+    return copy
   }
+  return [ride, ...list]
 }
 
-const saved = loadPersistedState()
 let driverSimTimer = null
 
 export const useRideStore = defineStore('ride', () => {
   const authStore = useAuthStore()
 
-  const rides = ref(saved?.rides?.length ? saved.rides : [...initialRides])
-  const activeRideId = ref(saved?.activeRideId ?? null)
+  const rides = ref([])
+  const activeRideId = ref(null)
+  const loading = ref(false)
+  const saving = ref(false)
+  const errorMessage = ref('')
+
   // Yalnızca Home/Driver demo — passenger haritası ASLA bunu kullanmaz
   const nearbyDrivers = ref(initialNearbyDrivers.map((d) => ({ ...d })))
 
-  // Auth kaynağı — mock setRole yerine Supabase profili
   const currentRole = computed(() => authStore.currentRole)
   const currentUser = computed(() => authStore.currentUser)
 
@@ -160,18 +204,7 @@ export const useRideStore = defineStore('ride', () => {
     }
   })
 
-  function saveToStorage() {
-    // nearbyDrivers kasıtlı yazılmaz — LocalStorage mock sızıntısını önler
-    persistState({
-      rides: rides.value,
-      activeRideId: activeRideId.value,
-    })
-  }
-
-  watch([rides, activeRideId], saveToStorage, { deep: true })
-
   function setRole() {
-    // Aşama 1: rol kayıt sırasında belirlenir; mock setRole kullanılmaz.
     console.warn('[AdaGo] setRole kaldırıldı. Rol auth profilinden gelir.')
   }
 
@@ -197,7 +230,7 @@ export const useRideStore = defineStore('ride', () => {
     }
   }
 
-  /** Passenger nearest: yalnızca driverStore.onlineDrivers (RPC gerçek sürücüler) */
+  /** Passenger nearest: yalnızca driverStore.onlineDrivers */
   function findNearestDriver(coords) {
     if (!coords) return null
 
@@ -233,7 +266,55 @@ export const useRideStore = defineStore('ride', () => {
     }
   }
 
-  function createRide({
+  async function fetchMyRides() {
+    loading.value = true
+    errorMessage.value = ''
+    try {
+      if (!authStore.isAuthenticated) {
+        rides.value = []
+        activeRideId.value = null
+        return []
+      }
+
+      const { data, error } = await supabase
+        .from('rides')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+
+      const mapped = (data || []).map(mapRideRow).filter(Boolean)
+      rides.value = mapped
+
+      const activeOwned = mapped.find(
+        (r) =>
+          r.status !== RIDE_STATUS.CANCELLED &&
+          r.status !== RIDE_STATUS.COMPLETED &&
+          (currentRole.value === 'passenger'
+            ? r.passengerId === currentUser.value?.id
+            : r.driverId === currentUser.value?.id ||
+              r.status === RIDE_STATUS.PENDING),
+      )
+      if (activeOwned) {
+        activeRideId.value = activeOwned.id
+      } else if (
+        activeRideId.value &&
+        !mapped.some((r) => r.id === activeRideId.value)
+      ) {
+        activeRideId.value = null
+      }
+
+      return mapped
+    } catch (err) {
+      errorMessage.value = mapAuthError(err) || 'Yolculuklar yüklenemedi.'
+      rides.value = []
+      return []
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function createRide({
     passengerName,
     phone,
     from,
@@ -251,102 +332,138 @@ export const useRideStore = defineStore('ride', () => {
     const fare = calculateFare(distanceKm)
     const nearest = findNearestDriver(fromCoords)
 
-    const ride = {
-      id: `ride-${Date.now()}`,
-      passengerId: currentUser.value.id,
-      passengerName: passengerName.trim(),
-      phone: phone.trim(),
-      from: from.trim(),
-      to: to.trim(),
-      fromCoords: fromCoords ? { ...fromCoords } : null,
-      toCoords: toCoords ? { ...toCoords } : null,
-      route: route || [],
-      distanceKm,
-      durationMin,
-      estimatedFare: fare.amount,
-      fareBreakdown: fare,
-      assignedDriver: nearest,
-      driverId: nearest?.id || null,
-      driverName: nearest?.name || null,
-      status: RIDE_STATUS.PENDING,
-      tripPhase: TRIP_PHASE.ASSIGNING,
-      createdAt: new Date().toISOString(),
-    }
+    saving.value = true
+    errorMessage.value = ''
+    try {
+      const { data, error } = await supabase.rpc('create_ride', {
+        p_passenger_name: passengerName.trim(),
+        p_passenger_phone: phone?.trim() || null,
+        p_from_label: from.trim(),
+        p_to_label: to.trim(),
+        p_from_lat: fromCoords?.lat ?? null,
+        p_from_lng: fromCoords?.lng ?? null,
+        p_to_lat: toCoords?.lat ?? null,
+        p_to_lng: toCoords?.lng ?? null,
+        p_route: route || [],
+        p_distance_km: distanceKm,
+        p_duration_min: durationMin,
+        p_estimated_fare: fare.amount,
+      })
+      if (error) throw error
 
-    rides.value = [ride, ...rides.value]
-    activeRideId.value = ride.id
-    return ride
+      const ride = mapRideRow(data)
+      if (nearest) {
+        ride.assignedDriver = {
+          id: nearest.id,
+          name: nearest.name,
+          rating: nearest.rating,
+          vehicleType: nearest.vehicleType,
+          etaMin: nearest.etaMin,
+        }
+      }
+
+      rides.value = upsertRideList(rides.value, ride)
+      activeRideId.value = ride.id
+      return ride
+    } catch (err) {
+      errorMessage.value = mapAuthError(err) || 'Talep oluşturulamadı.'
+      throw new Error(errorMessage.value)
+    } finally {
+      saving.value = false
+    }
   }
 
   function setActiveRide(rideId) {
     activeRideId.value = rideId
   }
 
-  function acceptRide(rideId) {
-    const ride = rides.value.find((item) => item.id === rideId)
-    if (!ride || ride.status !== RIDE_STATUS.PENDING) return null
+  async function acceptRide(rideId) {
+    saving.value = true
+    errorMessage.value = ''
+    try {
+      const { data, error } = await supabase.rpc('accept_ride', {
+        p_ride_id: rideId,
+      })
+      if (error) throw error
 
-    ride.status = RIDE_STATUS.ACCEPTED
-    ride.driverId = currentUser.value?.id ?? mockDriver.id
-    ride.driverName = currentUser.value?.name ?? mockDriver.name
-    ride.acceptedAt = new Date().toISOString()
-    ride.tripPhase = TRIP_PHASE.EN_ROUTE
-    ride.assignedDriver = {
-      id: ride.driverId,
-      name: ride.driverName,
-      rating: currentUser.value?.rating || mockDriver.rating,
-      vehicleType: currentUser.value?.vehicleType || mockDriver.vehicleType,
-      etaMin: ride.assignedDriver?.etaMin || 5,
+      const ride = mapRideRow(data)
+      if (currentUser.value) {
+        ride.driverName = currentUser.value.name
+        ride.assignedDriver = {
+          id: currentUser.value.id,
+          name: currentUser.value.name,
+          rating: currentUser.value.rating || 5,
+          vehicleType: currentUser.value.vehicleType || '—',
+          etaMin: ride.assignedDriver?.etaMin || 5,
+        }
+      }
+      rides.value = upsertRideList(rides.value, ride)
+      activeRideId.value = ride.id
+      return ride
+    } catch (err) {
+      errorMessage.value = mapAuthError(err) || 'Kabul başarısız.'
+      throw new Error(errorMessage.value)
+    } finally {
+      saving.value = false
     }
-    activeRideId.value = ride.id
-
-    return ride
   }
 
-  function startRide(rideId) {
-    const ride = rides.value.find((item) => item.id === rideId)
-    if (!ride) return null
-    if (ride.status !== RIDE_STATUS.ACCEPTED) return null
-    if (ride.tripPhase !== TRIP_PHASE.EN_ROUTE) return null
-
-    ride.tripPhase = TRIP_PHASE.IN_PROGRESS
-    return ride
-  }
-
-  function completeRide(rideId) {
-    const ride = rides.value.find((item) => item.id === rideId)
-    if (!ride) return null
-    if (ride.status === RIDE_STATUS.COMPLETED) return ride
-    if (ride.tripPhase !== TRIP_PHASE.IN_PROGRESS) return null
-
-    ride.status = RIDE_STATUS.COMPLETED
-    ride.tripPhase = TRIP_PHASE.COMPLETED
-    ride.completedAt = new Date().toISOString()
-
-    return ride
-  }
-
-  function cancelRide(rideId) {
-    const ride = rides.value.find((item) => item.id === rideId)
-    if (!ride) return null
-    if (
-      ride.status !== RIDE_STATUS.PENDING &&
-      ride.status !== RIDE_STATUS.ACCEPTED &&
-      ride.tripPhase !== TRIP_PHASE.ASSIGNING &&
-      ride.tripPhase !== TRIP_PHASE.EN_ROUTE &&
-      ride.tripPhase !== TRIP_PHASE.IN_PROGRESS
-    ) {
-      return null
+  async function startRide(rideId) {
+    saving.value = true
+    errorMessage.value = ''
+    try {
+      const { data, error } = await supabase.rpc('start_ride', {
+        p_ride_id: rideId,
+      })
+      if (error) throw error
+      const ride = mapRideRow(data)
+      rides.value = upsertRideList(rides.value, ride)
+      return ride
+    } catch (err) {
+      errorMessage.value = mapAuthError(err) || 'Başlatma başarısız.'
+      throw new Error(errorMessage.value)
+    } finally {
+      saving.value = false
     }
+  }
 
-    if (ride.tripPhase === TRIP_PHASE.COMPLETED) return null
+  async function completeRide(rideId) {
+    saving.value = true
+    errorMessage.value = ''
+    try {
+      const { data, error } = await supabase.rpc('complete_ride', {
+        p_ride_id: rideId,
+      })
+      if (error) throw error
+      const ride = mapRideRow(data)
+      rides.value = upsertRideList(rides.value, ride)
+      return ride
+    } catch (err) {
+      errorMessage.value = mapAuthError(err) || 'Tamamlama başarısız.'
+      throw new Error(errorMessage.value)
+    } finally {
+      saving.value = false
+    }
+  }
 
-    ride.status = RIDE_STATUS.CANCELLED
-    ride.tripPhase = null
-    ride.cancelledAt = new Date().toISOString()
-    if (activeRideId.value === rideId) activeRideId.value = null
-
-    return ride
+  async function cancelRide(rideId) {
+    saving.value = true
+    errorMessage.value = ''
+    try {
+      const { data, error } = await supabase.rpc('cancel_ride', {
+        p_ride_id: rideId,
+      })
+      if (error) throw error
+      const ride = mapRideRow(data)
+      rides.value = upsertRideList(rides.value, ride)
+      if (activeRideId.value === rideId) activeRideId.value = null
+      return ride
+    } catch (err) {
+      errorMessage.value = mapAuthError(err) || 'İptal başarısız.'
+      throw new Error(errorMessage.value)
+    } finally {
+      saving.value = false
+    }
   }
 
   function filterRides({ status = 'all', query = '' } = {}) {
@@ -365,6 +482,14 @@ export const useRideStore = defineStore('ride', () => {
     })
   }
 
+  function resetLocal() {
+    rides.value = []
+    activeRideId.value = null
+    errorMessage.value = ''
+    loading.value = false
+    saving.value = false
+  }
+
   return {
     rides,
     currentRole,
@@ -372,6 +497,9 @@ export const useRideStore = defineStore('ride', () => {
     activeRideId,
     activeRide,
     nearbyDrivers,
+    loading,
+    saving,
+    errorMessage,
     pendingRides,
     acceptedRides,
     completedRides,
@@ -386,6 +514,7 @@ export const useRideStore = defineStore('ride', () => {
     startDriverSimulation,
     stopDriverSimulation,
     findNearestDriver,
+    fetchMyRides,
     createRide,
     setActiveRide,
     acceptRide,
@@ -393,5 +522,6 @@ export const useRideStore = defineStore('ride', () => {
     completeRide,
     cancelRide,
     filterRides,
+    resetLocal,
   }
 })

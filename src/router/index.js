@@ -7,6 +7,8 @@ import DriverOnboardingView from '@/views/DriverOnboardingView.vue'
 import ProfileView from '@/views/ProfileView.vue'
 import LoginView from '@/views/LoginView.vue'
 import RegisterView from '@/views/RegisterView.vue'
+import AdminLoginView from '@/views/AdminLoginView.vue'
+import AdminView from '@/views/AdminView.vue'
 import { useAuthStore } from '@/stores/authStore'
 import { useDriverStore } from '@/stores/driverStore'
 
@@ -29,6 +31,18 @@ const router = createRouter({
       name: 'register',
       component: RegisterView,
       meta: { guestOnly: true },
+    },
+    {
+      path: '/admin/login',
+      name: 'admin-login',
+      component: AdminLoginView,
+      meta: { guestOnly: true, hideNavbar: true },
+    },
+    {
+      path: '/admin',
+      name: 'admin',
+      component: AdminView,
+      meta: { requiresAuth: true, role: 'admin', hideNavbar: true },
     },
     {
       path: '/role',
@@ -79,8 +93,9 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
+    const loginRoute = to.meta.role === 'admin' ? 'admin-login' : 'login'
     return {
-      name: 'login',
+      name: loginRoute,
       query: { redirect: to.fullPath },
     }
   }
@@ -91,6 +106,14 @@ router.beforeEach(async (to) => {
       return { name: 'role-select' }
     }
     return authStore.panelPathForRole()
+  }
+
+  // Admin asla yolcu/sürücü paneline düşmesin
+  if (
+    authStore.currentRole === 'admin' &&
+    (to.name === 'passenger' || to.name === 'driver' || to.name === 'driver-onboarding')
+  ) {
+    return { name: 'admin' }
   }
 
   // Aşama 2: sürücü onboarding zorunlu

@@ -219,6 +219,11 @@ onMounted(async () => {
   } catch (err) {
     presenceError.value = err?.message || 'Sürücü profili yüklenemedi.'
   }
+  try {
+    await rideStore.fetchMyRides()
+  } catch (err) {
+    presenceError.value = err?.message || 'Talepler yüklenemedi.'
+  }
   rideStore.startDriverSimulation()
   if (filteredRides.value[0]) {
     selectedId.value = filteredRides.value[0].id
@@ -269,26 +274,38 @@ function canComplete(ride) {
   return ride.tripPhase === TRIP_PHASE.IN_PROGRESS
 }
 
-function handleAccept(rideId) {
-  const ride = rideStore.acceptRide(rideId)
-  if (ride) {
-    selectedId.value = ride.id
-    infoMessage.value = `${ride.passengerName} kabul edildi`
+async function handleAccept(rideId) {
+  try {
+    const ride = await rideStore.acceptRide(rideId)
+    if (ride) {
+      selectedId.value = ride.id
+      infoMessage.value = `${ride.passengerName} kabul edildi`
+    }
+  } catch (err) {
+    presenceError.value = err?.message || 'Kabul başarısız.'
   }
 }
 
-function handleStart(rideId) {
-  const ride = rideStore.startRide(rideId)
-  if (ride) {
-    selectedId.value = ride.id
-    infoMessage.value = `${ride.passengerName} yolculuğu başladı`
+async function handleStart(rideId) {
+  try {
+    const ride = await rideStore.startRide(rideId)
+    if (ride) {
+      selectedId.value = ride.id
+      infoMessage.value = `${ride.passengerName} yolculuğu başladı`
+    }
+  } catch (err) {
+    presenceError.value = err?.message || 'Başlatma başarısız.'
   }
 }
 
-function handleComplete(rideId) {
-  const ride = rideStore.completeRide(rideId)
-  if (ride) {
-    infoMessage.value = `${ride.passengerName} tamamlandı`
+async function handleComplete(rideId) {
+  try {
+    const ride = await rideStore.completeRide(rideId)
+    if (ride) {
+      infoMessage.value = `${ride.passengerName} tamamlandı`
+    }
+  } catch (err) {
+    presenceError.value = err?.message || 'Tamamlama başarısız.'
   }
 }
 </script>

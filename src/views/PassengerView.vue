@@ -335,7 +335,10 @@ onMounted(async () => {
   passengerName.value = rideStore.currentUser?.name || ''
   phone.value = rideStore.currentUser?.phone || ''
   // 1) RPC fetch → 2) Realtime; mock/nearbyDrivers asla bağlanmaz
-  await driverStore.fetchOnlineDrivers()
+  await Promise.all([
+    rideStore.fetchMyRides(),
+    driverStore.fetchOnlineDrivers(),
+  ])
   driverStore.subscribeToDriverLocations()
   nextTick(() => mapRef.value?.invalidate?.())
 })
@@ -691,7 +694,7 @@ async function submitRide() {
       return
     }
 
-    rideStore.createRide({
+    await rideStore.createRide({
       passengerName: passengerName.value,
       phone: phone.value,
       from: locationLabel(fromLocation.value, 'Başlangıç'),
@@ -711,9 +714,13 @@ async function submitRide() {
   }
 }
 
-function handleCancel(rideId) {
-  rideStore.cancelRide(rideId)
-  resetRouteUi()
+async function handleCancel(rideId) {
+  try {
+    await rideStore.cancelRide(rideId)
+    resetRouteUi()
+  } catch (err) {
+    errorMessage.value = err.message || 'İptal başarısız.'
+  }
 }
 </script>
 

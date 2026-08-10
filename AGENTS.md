@@ -27,14 +27,13 @@ Bu proje 2025–2026 Yazılım Mühendisliği Bitirme Projesi kapsamında geliş
 * Leaflet (harita)
 * OSRM (rota çizimi)
 * Nominatim / OpenStreetMap (gerçek mekan ve adres araması)
-* LocalStorage (geçici ride kalıcılığı — Aşama 3’e kadar)
 
 ### Platform (Ana)
 
 * **Supabase Auth** — kimlik doğrulama
-* **Supabase PostgreSQL** — veritabanı
-* **Supabase Realtime** — gelecek aşamalarda yolcu/sürücü senkronizasyonu
-* **PostGIS** — gelecek aşamalarda yakındaki online sürücüler
+* **Supabase PostgreSQL** — veritabanı (`profiles`, `drivers`, `vehicles`, `rides`)
+* **Supabase Realtime** — online sürücü konumları (Aşama 2.5); ride Realtime Aşama 4
+* **PostGIS** — gelecek aşamada yakındaki online sürücüler
 
 ### Opsiyonel Backend (yalnızca gerekirse)
 
@@ -45,17 +44,18 @@ Firebase kullanılmaz.
 
 ---
 
-## Mevcut Sürüm Kuralları (V2 — Aşama 2.5)
+## Mevcut Sürüm Kuralları (V2 — Aşama 3)
 
 Bu aşamada:
 
-* Supabase Auth + `profiles` gerçek kullanıcı kaynağıdır.
-* `drivers` + `vehicles` + onboarding + online/offline + gerçek GPS vardır.
+* Supabase Auth + `profiles` gerçek kullanıcı kaynağıdır (`passenger` | `driver` | `admin`).
+* `drivers` + `vehicles` + onboarding + online/offline + gerçek cihaz GPS vardır.
 * Yolcu haritasında **gerçek online sürücüler** gösterilir (`get_online_drivers_for_map` + Realtime).
-* `mockPassenger` / `mockDriver` authentication kaynağı değildir.
-* Yolculuklar hâlâ Pinia + LocalStorage (`adago-state-v1`) ile çalışır.
-* `initialNearbyDrivers` demo/Home için kalabilir; PassengerView mock kullanmaz.
-* PostGIS / `rides` tablosu henüz yoktur.
+* Yolculuklar Supabase `rides` tablosunda; lifecycle RPC: `create_ride` / `accept_ride` / `start_ride` / `complete_ride` / `cancel_ride`.
+* Tamamlanan yolculukta DB içinde **%5 AdaGo komisyonu** hesaplanır (`complete_ride`).
+* Admin paneli: `/admin` + `/admin/login` (Auth + `profiles.role=admin` + RLS; hardcoded şifre yok).
+* `initialNearbyDrivers` yalnızca Home/Driver demo için kalabilir; PassengerView mock kullanmaz.
+* PostGIS / ride Realtime henüz yoktur.
 * Leaflet, OSRM, Nominatim ve ücret sistemi korunur.
 
 ---
@@ -76,19 +76,27 @@ SQL: `supabase/migrations/001_profiles.sql`
 
 SQL: `supabase/migrations/002_drivers_vehicles.sql`
 
-### Aşama 2.5 (şimdi)
+### Aşama 2.5 (tamamlandı)
 
 Yolcu haritasında gerçek online sürücüler + `drivers` Realtime + stale GPS (90 sn)
 
 SQL: `supabase/migrations/002_5_live_drivers.sql`
 
-### Aşama 3 (henüz değil)
+### Aşama 3 (şimdi)
 
-`rides` tablosu + mevcut LocalStorage ride sisteminin Supabase’e taşınması
+`rides` + admin RBAC + %5 komisyon + admin paneli
+
+SQL: `supabase/migrations/003_rides_admin_commission.sql`
+
+RLS sıkılaştırma (doğrudan client UPDATE/INSERT kapalı; lifecycle yalnız RPC):
+
+SQL: `supabase/migrations/003_1_rides_rls_hardening.sql`
+
+Admin kurulum: `supabase/ADMIN_SETUP.md`
 
 ### Aşama 4 (henüz değil)
 
-Supabase Realtime ile yolcu/sürücü senkronizasyonu (geniş)
+Supabase Realtime ile yolcu/sürücü ride senkronizasyonu (geniş)
 
 ### Aşama 5 (henüz değil)
 
@@ -111,7 +119,7 @@ PostGIS ile yakındaki online sürücülerin bulunması
 ### Yolcu
 
 * Haritadan / listeden / aramayla nereden–nereye seçebilir
-* Yolculuk talebi oluşturabilir
+* Yolculuk talebi oluşturabilir (Supabase `create_ride`)
 * Tahmini ücret ve en yakın sürücüyü görebilir
 * Yolculuk durumunu takip edebilir
 * Talebi iptal edebilir
@@ -127,27 +135,36 @@ PostGIS ile yakındaki online sürücülerin bulunması
 * Talebi kabul edebilir / yolculuğu başlatabilir / tamamlayabilir
 * Profilini ve araç bilgilerini görüntüleyebilir
 
+### Admin
+
+* Gerçek Supabase Auth kullanıcısı; `profiles.role = 'admin'` (manuel SQL)
+* Normal Register’dan admin seçilemez
+* Dashboard: kullanıcı / sürücü / ride / komisyon istatistikleri
+* Yalnızca gerçek `profiles` / `drivers` / `rides` verisi
+
 Kayıt sırasında rol seçilir (`passenger` | `driver`) ve `profiles.role` alanında saklanır.
 
 ---
 
 ## Yolculuk Durumları
 
-Talep durumu (`RIDE_STATUS`):
+Talep durumu (`RIDE_STATUS` / DB):
 
-* Bekliyor
-* Kabul Edildi
-* Tamamlandı
-* İptal Edildi
+* Bekliyor (`pending`)
+* Kabul Edildi (`accepted`)
+* Tamamlandı (`completed`) — %5 komisyon kesinleşir
+* İptal Edildi (`cancelled`) — komisyon yok
 
 Yolcu yolculuk fazı (`TRIP_PHASE`):
 
-* Sürücü atanıyor
-* Sürücü yolda
-* Yolculuk başladı
-* Yolculuk tamamlandı
+* Sürücü atanıyor (`assigning`)
+* Sürücü yolda (`en_route`)
+* Yolculuk başladı (`in_progress`)
+* Yolculuk tamamlandı (`completed`)
 
 Manuel sürücü akışı: Kabul Et → Yolculuğu Başlat → Tamamla
+
+Komisyon: `gross_fare * 0.05` → `commission_amount`; `driver_net_amount = gross_fare - commission_amount` (DB `complete_ride` RPC).
 
 ---
 
@@ -155,7 +172,9 @@ Manuel sürücü akışı: Kabul Et → Yolculuğu Başlat → Tamamla
 
 * `/` — Ana sayfa (canlı harita + AdaGo tanıtım)
 * `/login` — Giriş (Supabase Auth)
-* `/register` — Kayıt (ad, telefon, e-posta, şifre, rol)
+* `/register` — Kayıt (ad, telefon, e-posta, şifre, rol: passenger|driver)
+* `/admin/login` — Admin girişi
+* `/admin` — Admin paneli (yalnız `admin`)
 * `/role` — Hesap rolü özeti / panele yönlendirme
 * `/passenger` — Yolcu harita paneli (yalnız `passenger`)
 * `/driver` — Sürücü harita paneli (yalnız `driver`)
@@ -176,7 +195,8 @@ Manuel sürücü akışı: Kabul Et → Yolculuğu Başlat → Tamamla
 8. Supabase Auth + profil
 9. Sürücü onboarding + `drivers` / `vehicles` + online/offline + GPS (throttle’lı)
 10. Passenger Realtime: `drivers` postgres_changes
-11. LocalStorage ride kalıcılığı (Aşama 3’e kadar)
+11. Supabase `rides` + lifecycle RPC + %5 komisyon
+12. Admin paneli (RBAC + RLS + finans özeti)
 
 ---
 
@@ -184,7 +204,7 @@ Manuel sürücü akışı: Kabul Et → Yolculuğu Başlat → Tamamla
 
 * Vue 3 Composition API + `script setup`
 * Component bazlı mimari
-* Mevcut store yapısı korunmalı (`authStore` + `rideStore` + `driverStore`)
+* Mevcut store yapısı korunmalı (`authStore` + `rideStore` + `driverStore` + `adminStore`)
 * Yeni özellikler mümkün olduğunca ayrı component olarak eklenmeli
 * Responsive tasarım korunmalı
 * Dosya isimleri anlamlı olmalı
@@ -199,6 +219,8 @@ src/
     HomeView.vue
     LoginView.vue
     RegisterView.vue
+    AdminLoginView.vue
+    AdminView.vue
     RoleSelectView.vue
     PassengerView.vue
     DriverView.vue
@@ -219,6 +241,7 @@ src/
     authStore.js
     rideStore.js
     driverStore.js
+    adminStore.js
   lib/
     supabase.js
   data/
@@ -231,10 +254,12 @@ src/
     vuetify.js
   assets/
 supabase/
+  ADMIN_SETUP.md
   migrations/
     001_profiles.sql
     002_drivers_vehicles.sql
     002_5_live_drivers.sql
+    003_rides_admin_commission.sql
 ```
 
 ---
@@ -259,20 +284,19 @@ Secret / `service_role` key frontend’e konulmaz.
 
 ---
 
-## Milestone Senaryosu (Aşama 2)
+## Milestone Senaryosu (Aşama 3)
 
-1. Sürücü hesabı ile giriş.
-2. Araç yoksa onboarding: tip + plaka (zorunlu), marka/model/renk (opsiyonel).
-3. Driver panelinde Çevrimiçi ol → konum izni → `last_lat` / `last_lng` yazılır.
-4. Çevrimdışı → watcher durur, `is_online=false`.
-5. Refresh sonrası online/araç durumu DB’den gelir.
-6. Yolcu paneli mock sürücüler + LocalStorage ride ile çalışmaya devam eder.
+1. `003_rides_admin_commission.sql` + admin hesabı (`ADMIN_SETUP.md`).
+2. Yolcu ride oluşturur → DB `pending`.
+3. Sürücü kabul / başlat / tamamla → komisyon DB’de %5.
+4. Admin `/admin` → gerçek kullanıcılar, sürücüler, komisyonlar.
+5. Passenger haritası yalnızca gerçek online GPS sürücüleri gösterir.
 
 ---
 
 ## Gelecek Sürümler
 
-* Aşama 3–5: yukarıdaki migration sırası (onaysız uygulanmaz)
+* Aşama 4–5: yukarıdaki migration sırası (onaysız uygulanmaz)
 * Değerlendirme sistemi, yolculuk geçmişi UI iyileştirmeleri (sonraki işler)
 
 ---
@@ -289,10 +313,11 @@ Secret / `service_role` key frontend’e konulmaz.
 - Her yeni özellik için loading, empty ve error durumlarını değerlendir.
 - Hardcoded verileri component içine yazma; mockData, store veya Supabase kullan.
 - Business logic'i mümkün olduğunca componentlerden ayır.
-- İstenmeyen aşamayı uygulamadan ekleme; Aşama 3–5 (rides-DB / geniş Realtime / PostGIS) için ayrı onay bekle.
+- İstenmeyen aşamayı uygulamadan ekleme; Aşama 4–5 (geniş Realtime / PostGIS) için ayrı onay bekle.
 - Yeni dependency eklemeden önce mevcut dependency'leri kontrol et.
 - Değişiklik yaptıktan sonra npm run build çalıştır.
 - Build hatası varsa çözmeden görevi tamamlanmış kabul etme.
 - Büyük değişikliklerden önce mevcut mimariyi özetle.
 - Kullanılmayan import, component ve kod bırakma.
 - Firebase ekleme.
+- Admin için frontend hardcoded şifre yazma.

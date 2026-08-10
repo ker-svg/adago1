@@ -112,6 +112,14 @@ const initials = computed(() => {
 })
 
 onMounted(async () => {
+  if (authStore.currentRole === 'admin') {
+    return
+  }
+  try {
+    await rideStore.fetchMyRides()
+  } catch {
+    // Profil yine de temel bilgileri gösterir
+  }
   if (!isPassenger.value) {
     try {
       await driverStore.ensureLoaded()
