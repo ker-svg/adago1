@@ -6,7 +6,7 @@
         :from-coords="mapFrom"
         :to-coords="mapTo"
         :route="mapRoute"
-        :drivers="rideStore.nearbyDrivers"
+        :drivers="driverStore.onlineDrivers"
         :pick-mode="activeOwnedRide ? null : pickMode"
         :fit-drivers="!fromCoords && !toCoords"
         @pick="onMapPick"
@@ -41,6 +41,23 @@
 
       <template v-else>
         <div class="sheet-title mb-2">Nereye?</div>
+
+        <v-alert
+          v-if="driverStore.onlineDriversError"
+          type="warning"
+          variant="tonal"
+          density="compact"
+          class="mb-2"
+        >
+          {{ driverStore.onlineDriversError }}
+        </v-alert>
+
+        <div
+          v-else-if="!driverStore.onlineDriversLoading && driverStore.onlineDrivers.length === 0"
+          class="empty-drivers"
+        >
+          Şu anda çevrimiçi sürücü bulunmuyor.
+        </div>
 
         <div
           class="location-row"
@@ -200,6 +217,7 @@ import FareEstimateCard from '@/components/FareEstimateCard.vue'
 import RideMap from '@/components/RideMap.vue'
 import TripStatusPanel from '@/components/TripStatusPanel.vue'
 import { RIDE_STATUS, TRIP_PHASE } from '@/data/mockData'
+import { useDriverStore } from '@/stores/driverStore'
 import { useRideStore } from '@/stores/rideStore'
 import { calculateFare } from '@/utils/fare'
 import {
@@ -214,6 +232,7 @@ const SEARCH_DEBOUNCE_MS = 400
 const SEARCH_MIN_CHARS = 3
 
 const rideStore = useRideStore()
+const driverStore = useDriverStore()
 const mapRef = ref(null)
 
 const passengerName = ref('')
@@ -301,10 +320,11 @@ const canRequest = computed(
     Boolean(routeMeta.value),
 )
 
-onMounted(() => {
+onMounted(async () => {
   passengerName.value = rideStore.currentUser?.name || ''
   phone.value = rideStore.currentUser?.phone || ''
-  rideStore.startDriverSimulation()
+  await driverStore.fetchOnlineDrivers()
+  driverStore.subscribeToDriverLocations()
   nextTick(() => mapRef.value?.invalidate?.())
 })
 
@@ -314,7 +334,7 @@ onUnmounted(() => {
   fromSearchAbort?.abort()
   toSearchAbort?.abort()
   routeAbortController?.abort()
-  rideStore.stopDriverSimulation()
+  void driverStore.unsubscribeDriverLocations()
 })
 
 watch(activeOwnedRide, (ride) => {
@@ -704,6 +724,16 @@ function handleCancel(rideId) {
   font-weight: 800;
   color: #111827;
   letter-spacing: -0.02em;
+}
+
+.empty-drivers {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f3f4f6;
+  color: #6b7280;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .location-row {

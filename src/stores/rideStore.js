@@ -9,6 +9,7 @@ import {
 } from '@/data/mockData'
 import { calculateFare, estimateEtaMinutes, haversineKm } from '@/utils/fare'
 import { useAuthStore } from '@/stores/authStore'
+import { useDriverStore } from '@/stores/driverStore'
 
 const STORAGE_KEY = 'adago-state-v1'
 
@@ -199,12 +200,17 @@ export const useRideStore = defineStore('ride', () => {
   }
 
   function findNearestDriver(coords) {
-    if (!coords || !nearbyDrivers.value.length) return null
+    if (!coords) return null
+
+    const driverStore = useDriverStore()
+    // Aşama 2.5: yolcu en yakın hesabı yalnızca gerçek onlineDrivers kullanır
+    const pool = driverStore.onlineDrivers || []
+    if (!pool.length) return null
 
     let best = null
     let bestDistance = Infinity
 
-    for (const driver of nearbyDrivers.value) {
+    for (const driver of pool) {
       const distance = haversineKm(coords, {
         lat: driver.lat,
         lng: driver.lng,

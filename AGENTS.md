@@ -45,16 +45,17 @@ Firebase kullanılmaz.
 
 ---
 
-## Mevcut Sürüm Kuralları (V2 — Aşama 2)
+## Mevcut Sürüm Kuralları (V2 — Aşama 2.5)
 
 Bu aşamada:
 
 * Supabase Auth + `profiles` gerçek kullanıcı kaynağıdır.
-* `drivers` + `vehicles` tabloları + sürücü onboarding + online/offline + gerçek GPS vardır.
+* `drivers` + `vehicles` + onboarding + online/offline + gerçek GPS vardır.
+* Yolcu haritasında **gerçek online sürücüler** gösterilir (`get_online_drivers_for_map` + Realtime).
 * `mockPassenger` / `mockDriver` authentication kaynağı değildir.
 * Yolculuklar hâlâ Pinia + LocalStorage (`adago-state-v1`) ile çalışır.
-* Yakındaki sürücüler hâlâ mock (`nearbyDrivers`) simülasyonudur (yolcu haritasına gerçek GPS henüz bağlı değil).
-* Realtime / PostGIS / `rides` tablosu henüz yoktur.
+* `initialNearbyDrivers` demo/Home için kalabilir; PassengerView mock kullanmaz.
+* PostGIS / `rides` tablosu henüz yoktur.
 * Leaflet, OSRM, Nominatim ve ücret sistemi korunur.
 
 ---
@@ -69,11 +70,17 @@ Supabase bağlantısı + Auth + `profiles` + session + role tabanlı route guard
 
 SQL: `supabase/migrations/001_profiles.sql`
 
-### Aşama 2 (şimdi)
+### Aşama 2 (tamamlandı)
 
 `drivers` + `vehicles` + online/offline + gerçek cihaz GPS konumu + sürücü onboarding
 
 SQL: `supabase/migrations/002_drivers_vehicles.sql`
+
+### Aşama 2.5 (şimdi)
+
+Yolcu haritasında gerçek online sürücüler + `drivers` Realtime + stale GPS (90 sn)
+
+SQL: `supabase/migrations/002_5_live_drivers.sql`
 
 ### Aşama 3 (henüz değil)
 
@@ -81,7 +88,7 @@ SQL: `supabase/migrations/002_drivers_vehicles.sql`
 
 ### Aşama 4 (henüz değil)
 
-Supabase Realtime ile yolcu/sürücü senkronizasyonu
+Supabase Realtime ile yolcu/sürücü senkronizasyonu (geniş)
 
 ### Aşama 5 (henüz değil)
 
@@ -162,13 +169,14 @@ Manuel sürücü akışı: Kabul Et → Yolculuğu Başlat → Tamamla
 1. Leaflet harita (KKTC sınırına kilitli)
 2. A/B marker + OSRM rota çizimi
 3. Nominatim ile gerçek konum/mekan arama
-4. Yakındaki sürücüler (Aşama 2: hâlâ mock simülasyon; gerçek GPS yalnızca sürücü tablosunda)
-5. En yakın sürücü + ETA
+4. Yakındaki sürücüler (Aşama 2.5: gerçek online + GPS; Home/demo mock kalabilir)
+5. En yakın sürücü + ETA (haversine, gerçek onlineDrivers)
 6. Tahmini ücret (açılış + km ücreti)
 7. Modern bottom sheet
 8. Supabase Auth + profil
 9. Sürücü onboarding + `drivers` / `vehicles` + online/offline + GPS (throttle’lı)
-10. LocalStorage ride kalıcılığı (Aşama 3’e kadar)
+10. Passenger Realtime: `drivers` postgres_changes
+11. LocalStorage ride kalıcılığı (Aşama 3’e kadar)
 
 ---
 
@@ -226,6 +234,7 @@ supabase/
   migrations/
     001_profiles.sql
     002_drivers_vehicles.sql
+    002_5_live_drivers.sql
 ```
 
 ---
@@ -280,7 +289,7 @@ Secret / `service_role` key frontend’e konulmaz.
 - Her yeni özellik için loading, empty ve error durumlarını değerlendir.
 - Hardcoded verileri component içine yazma; mockData, store veya Supabase kullan.
 - Business logic'i mümkün olduğunca componentlerden ayır.
-- İstenmeyen aşamayı uygulamadan ekleme; Aşama 3–5 (rides-DB / Realtime / PostGIS) için ayrı onay bekle.
+- İstenmeyen aşamayı uygulamadan ekleme; Aşama 3–5 (rides-DB / geniş Realtime / PostGIS) için ayrı onay bekle.
 - Yeni dependency eklemeden önce mevcut dependency'leri kontrol et.
 - Değişiklik yaptıktan sonra npm run build çalıştır.
 - Build hatası varsa çözmeden görevi tamamlanmış kabul etme.
