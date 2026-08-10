@@ -12,7 +12,12 @@ export const DRIVER_LOCATION_STALE_MS = 90_000
 const LOCATION_THROTTLE_MS = 4000
 const MIN_MOVE_DEG = 0.00008 // ~9m civarı; daha küçük hareketleri atla
 const ONLINE_CHANNEL = 'adago-online-drivers'
-const STALE_PRUNE_MS = 15_000
+const STALE_PRUNE_MS = 5_000
+const ONLINE_REFRESH_MS = 20_000
+
+/** Supabase auth kullanıcı id — mock `near-2` / `driver-1` gibi id'leri ele */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** Sınır yakınındaki sürücüleri yanlışlıkla elemek için hafif genişletilmiş bounds */
 const SOFT_BOUNDS = {
@@ -20,6 +25,10 @@ const SOFT_BOUNDS = {
   west: MAP_BOUNDS[0][1] - 0.2,
   north: MAP_BOUNDS[1][0] + 0.2,
   east: MAP_BOUNDS[1][1] + 0.2,
+}
+
+export function isSupabaseDriverId(id) {
+  return typeof id === 'string' && UUID_RE.test(id)
 }
 
 function mapDriver(row) {
@@ -55,13 +64,20 @@ function mapVehicle(row) {
 
 function mapOnlineDriverRow(row) {
   if (!row) return null
+  const latRaw = row.lat ?? row.last_lat
+  const lngRaw = row.lng ?? row.last_lng
+  // Number(null) === 0 → sahte koordinat üretme
+  if (latRaw == null || lngRaw == null) return null
+  const lat = Number(latRaw)
+  const lng = Number(lngRaw)
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
   return {
     id: row.id,
     name: row.name || 'Sürücü',
     rating: Number(row.rating ?? 5),
     vehicleType: row.vehicle_type || row.vehicleType || '—',
-    lat: Number(row.lat ?? row.last_lat),
-    lng: Number(row.lng ?? row.last_lng),
+    lat,
+    lng,
     lastLocationAt: row.last_location_at || row.lastLocationAt || null,
   }
 }
@@ -80,8 +96,9 @@ function isValidMapCoords(lat, lng) {
   return true
 }
 
-function qualifiesForPassengerMap(driver) {
-  if (!driver?.id) return false
+/** Passenger haritası / nearest: yalnızca gerçek UUID + taze GPS */
+export function qualifiesForPassengerMap(driver) {
+  if (!driver || !isSupabaseDriverId(driver.id)) return false
   if (!isValidMapCoords(driver.lat, driver.lng)) return false
   if (!isFreshLocation(driver.lastLocationAt)) return false
   return true
@@ -108,6 +125,7 @@ export const useDriverStore = defineStore('driver', () => {
   let lastUploadedCoords = null
   let onlineChannel = null
   let stalePruneTimer = null
+  let onlineRefreshTimer = null
 
   const needsOnboarding = computed(() => {
     if (authStore.currentRole !== 'driver') return false
@@ -427,9 +445,29 @@ export const useDriverStore = defineStore('driver', () => {
     }
   }
 
-  async function fetchOnlineDrivers() {
-    onlineDriversLoading.value = true
-    onlineDriversError.value = ''
+  function startOnlineRefresh() {
+    if (onlineRefreshTimer) return
+    onlineRefreshTimer = setInterval(() => {
+      void fetchOnlineDrivers({ quiet: true })
+    }, ONLINE_REFRESH_MS)
+  }
+
+  function stopOnlineRefresh() {
+    if (onlineRefreshTimer) {
+      clearInterval(onlineRefreshTimer)
+      onlineRefreshTimer = null
+    }
+  }
+
+  /**
+   * Passenger haritası TEK kaynağı.
+   * Mock / nearbyDrivers / LocalStorage asla buraya yazılmaz.
+   */
+  async function fetchOnlineDrivers({ quiet = false } = {}) {
+    if (!quiet) {
+      onlineDriversLoading.value = true
+      onlineDriversError.value = ''
+    }
     try {
       if (!authStore.isAuthenticated) {
         onlineDrivers.value = []
@@ -441,22 +479,27 @@ export const useDriverStore = defineStore('driver', () => {
 
       onlineDrivers.value = (data || [])
         .map(mapOnlineDriverRow)
+        .filter(Boolean)
         .filter(qualifiesForPassengerMap)
 
       return onlineDrivers.value
     } catch (err) {
-      onlineDriversError.value =
-        mapAuthError(err) || 'Çevrimiçi sürücüler yüklenemedi.'
+      if (!quiet) {
+        onlineDriversError.value =
+          mapAuthError(err) || 'Çevrimiçi sürücüler yüklenemedi.'
+      }
+      // Hata durumunda mock'a düşme — listeyi boşalt
       onlineDrivers.value = []
       return []
     } finally {
-      onlineDriversLoading.value = false
+      if (!quiet) onlineDriversLoading.value = false
     }
   }
 
   function upsertOnlineDriverFromRealtime(row) {
-    if (!row?.id) return
+    if (!row?.id || !isSupabaseDriverId(row.id)) return
 
+    // Offline → marker hemen kalkar (Realtime)
     if (!row.is_online) {
       onlineDrivers.value = onlineDrivers.value.filter((d) => d.id !== row.id)
       return
@@ -472,7 +515,7 @@ export const useDriverStore = defineStore('driver', () => {
       last_location_at: row.last_location_at,
     })
 
-    if (!qualifiesForPassengerMap(mapped)) {
+    if (!mapped || !qualifiesForPassengerMap(mapped)) {
       onlineDrivers.value = onlineDrivers.value.filter((d) => d.id !== row.id)
       return
     }
@@ -493,15 +536,15 @@ export const useDriverStore = defineStore('driver', () => {
       return
     }
 
-    // Yeni sürücü: isim / araç tipi için RPC yenile
-    void fetchOnlineDrivers()
+    // Yeni sürücü: role/vehicle doğrulaması için RPC (mock eklenmez)
+    void fetchOnlineDrivers({ quiet: true })
   }
 
   function handleDriversRealtime(payload) {
     const event = payload?.eventType || payload?.event
     if (event === 'DELETE') {
       const oldId = payload?.old?.id
-      if (oldId) {
+      if (oldId && isSupabaseDriverId(oldId)) {
         onlineDrivers.value = onlineDrivers.value.filter((d) => d.id !== oldId)
       }
       return
@@ -509,7 +552,7 @@ export const useDriverStore = defineStore('driver', () => {
 
     const row = payload?.new
     if (!row) {
-      void fetchOnlineDrivers()
+      void fetchOnlineDrivers({ quiet: true })
       return
     }
 
@@ -530,16 +573,18 @@ export const useDriverStore = defineStore('driver', () => {
         if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           onlineDriversError.value =
             'Canlı konum bağlantısı koptu. Harita çalışmaya devam ediyor.'
-          void fetchOnlineDrivers()
+          void fetchOnlineDrivers({ quiet: true })
         }
       })
 
     startStalePrune()
+    startOnlineRefresh()
     return onlineChannel
   }
 
   async function unsubscribeDriverLocations() {
     stopStalePrune()
+    stopOnlineRefresh()
     if (!onlineChannel) return
     const ch = onlineChannel
     onlineChannel = null

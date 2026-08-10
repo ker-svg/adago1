@@ -120,13 +120,22 @@ function renderDrivers() {
   if (!map) return
   const seen = new Set()
 
-  for (const driver of props.drivers || []) {
+  // Yalnızca prop — mock üretme / fallback yok
+  const list = (props.drivers || []).filter(
+    (driver) =>
+      driver &&
+      driver.id != null &&
+      Number.isFinite(Number(driver.lat)) &&
+      Number.isFinite(Number(driver.lng)),
+  )
+
+  for (const driver of list) {
     seen.add(driver.id)
-    const latLng = [driver.lat, driver.lng]
+    const latLng = [Number(driver.lat), Number(driver.lng)]
     const popup = `
       <div class="adago-popup">
-        <strong>${driver.name}</strong>
-        <div>⭐ ${driver.rating} · ${driver.vehicleType}</div>
+        <strong>${driver.name || 'Sürücü'}</strong>
+        <div>⭐ ${driver.rating ?? '—'} · ${driver.vehicleType || '—'}</div>
       </div>
     `
 
@@ -215,12 +224,21 @@ function renderOverlays({ fit = true } = {}) {
   } else if (boundsPoints.length === 1) {
     map.setView(boundsPoints[0], 14, { animate: true })
   } else if (props.fitDrivers && props.drivers?.length) {
-    const driverBounds = props.drivers.map((d) => [d.lat, d.lng])
-    map.fitBounds(driverBounds, {
-      padding: [56, 56],
-      maxZoom: 13,
-      animate: true,
-    })
+    const driverBounds = props.drivers
+      .filter(
+        (d) =>
+          d &&
+          Number.isFinite(Number(d.lat)) &&
+          Number.isFinite(Number(d.lng)),
+      )
+      .map((d) => [Number(d.lat), Number(d.lng)])
+    if (driverBounds.length) {
+      map.fitBounds(driverBounds, {
+        padding: [56, 56],
+        maxZoom: 13,
+        animate: true,
+      })
+    }
   }
 }
 

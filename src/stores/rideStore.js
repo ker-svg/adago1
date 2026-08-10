@@ -9,7 +9,10 @@ import {
 } from '@/data/mockData'
 import { calculateFare, estimateEtaMinutes, haversineKm } from '@/utils/fare'
 import { useAuthStore } from '@/stores/authStore'
-import { useDriverStore } from '@/stores/driverStore'
+import {
+  qualifiesForPassengerMap,
+  useDriverStore,
+} from '@/stores/driverStore'
 
 const STORAGE_KEY = 'adago-state-v1'
 
@@ -17,14 +20,8 @@ const STORAGE_KEY = 'adago-state-v1'
 function normalizePersistedState(parsed) {
   if (!parsed || !Array.isArray(parsed.rides)) return null
 
-  if (Array.isArray(parsed.nearbyDrivers)) {
-    parsed.nearbyDrivers = parsed.nearbyDrivers.map((driver) => {
-      if (driver?.id === 'near-1' && driver?.name === 'Mehmet Demir') {
-        return { ...driver, id: 'driver-1' }
-      }
-      return driver
-    })
-  }
+  // nearbyDrivers LocalStorage'dan okunmaz (passenger haritasına sızmasın).
+  // Home/Driver demo için bellek içi initialNearbyDrivers kullanılır.
 
   parsed.rides = parsed.rides.map((ride) => {
     let next = ride
@@ -56,7 +53,11 @@ function loadPersistedState() {
     const parsed = JSON.parse(raw)
     const normalized = normalizePersistedState(parsed)
     if (normalized) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
+      // nearbyDrivers'ı kalıcı state'ten düşür — passenger map'e sızmasın
+      const rest = { ...normalized }
+      delete rest.nearbyDrivers
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(rest))
+      return rest
     }
     return normalized
   } catch {
@@ -80,11 +81,8 @@ export const useRideStore = defineStore('ride', () => {
 
   const rides = ref(saved?.rides?.length ? saved.rides : [...initialRides])
   const activeRideId = ref(saved?.activeRideId ?? null)
-  const nearbyDrivers = ref(
-    saved?.nearbyDrivers?.length
-      ? saved.nearbyDrivers
-      : initialNearbyDrivers.map((d) => ({ ...d })),
-  )
+  // Yalnızca Home/Driver demo — passenger haritası ASLA bunu kullanmaz
+  const nearbyDrivers = ref(initialNearbyDrivers.map((d) => ({ ...d })))
 
   // Auth kaynağı — mock setRole yerine Supabase profili
   const currentRole = computed(() => authStore.currentRole)
@@ -163,14 +161,14 @@ export const useRideStore = defineStore('ride', () => {
   })
 
   function saveToStorage() {
+    // nearbyDrivers kasıtlı yazılmaz — LocalStorage mock sızıntısını önler
     persistState({
       rides: rides.value,
       activeRideId: activeRideId.value,
-      nearbyDrivers: nearbyDrivers.value,
     })
   }
 
-  watch([rides, activeRideId, nearbyDrivers], saveToStorage, { deep: true })
+  watch([rides, activeRideId], saveToStorage, { deep: true })
 
   function setRole() {
     // Aşama 1: rol kayıt sırasında belirlenir; mock setRole kullanılmaz.
@@ -199,12 +197,12 @@ export const useRideStore = defineStore('ride', () => {
     }
   }
 
+  /** Passenger nearest: yalnızca driverStore.onlineDrivers (RPC gerçek sürücüler) */
   function findNearestDriver(coords) {
     if (!coords) return null
 
     const driverStore = useDriverStore()
-    // Aşama 2.5: yolcu en yakın hesabı yalnızca gerçek onlineDrivers kullanır
-    const pool = driverStore.onlineDrivers || []
+    const pool = (driverStore.onlineDrivers || []).filter(qualifiesForPassengerMap)
     if (!pool.length) return null
 
     let best = null

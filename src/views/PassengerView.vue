@@ -6,7 +6,7 @@
         :from-coords="mapFrom"
         :to-coords="mapTo"
         :route="mapRoute"
-        :drivers="driverStore.onlineDrivers"
+        :drivers="passengerMapDrivers"
         :pick-mode="activeOwnedRide ? null : pickMode"
         :fit-drivers="!fromCoords && !toCoords"
         @pick="onMapPick"
@@ -53,7 +53,7 @@
         </v-alert>
 
         <div
-          v-else-if="!driverStore.onlineDriversLoading && driverStore.onlineDrivers.length === 0"
+          v-else-if="!driverStore.onlineDriversLoading && passengerMapDrivers.length === 0"
           class="empty-drivers"
         >
           Şu anda çevrimiçi sürücü bulunmuyor.
@@ -217,7 +217,10 @@ import FareEstimateCard from '@/components/FareEstimateCard.vue'
 import RideMap from '@/components/RideMap.vue'
 import TripStatusPanel from '@/components/TripStatusPanel.vue'
 import { RIDE_STATUS, TRIP_PHASE } from '@/data/mockData'
-import { useDriverStore } from '@/stores/driverStore'
+import {
+  qualifiesForPassengerMap,
+  useDriverStore,
+} from '@/stores/driverStore'
 import { useRideStore } from '@/stores/rideStore'
 import { calculateFare } from '@/utils/fare'
 import {
@@ -234,6 +237,14 @@ const SEARCH_MIN_CHARS = 3
 const rideStore = useRideStore()
 const driverStore = useDriverStore()
 const mapRef = ref(null)
+
+/**
+ * Passenger haritası TEK sürücü kaynağı: driverStore.onlineDrivers (RPC).
+ * nearbyDrivers / initialNearbyDrivers / mockDriver / LocalStorage YOK.
+ */
+const passengerMapDrivers = computed(() =>
+  (driverStore.onlineDrivers || []).filter(qualifiesForPassengerMap),
+)
 
 const passengerName = ref('')
 const phone = ref('')
@@ -323,6 +334,7 @@ const canRequest = computed(
 onMounted(async () => {
   passengerName.value = rideStore.currentUser?.name || ''
   phone.value = rideStore.currentUser?.phone || ''
+  // 1) RPC fetch → 2) Realtime; mock/nearbyDrivers asla bağlanmaz
   await driverStore.fetchOnlineDrivers()
   driverStore.subscribeToDriverLocations()
   nextTick(() => mapRef.value?.invalidate?.())
