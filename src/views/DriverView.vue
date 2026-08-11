@@ -5,8 +5,11 @@
         ref="mapRef"
         :from-coords="selectedRide?.fromCoords || null"
         :to-coords="selectedRide?.toCoords || null"
-        :route="selectedRide?.route || []"
+        :route="mapRoute"
         :drivers="[]"
+        :tracking-driver="selfTrackingDriver"
+        :driver-route="driverRoute"
+        :fit-key="mapFitKey"
         :interactive="false"
       />
     </div>
@@ -102,6 +105,14 @@
         {{ presenceError }}
       </v-alert>
 
+      <div v-if="driverLiveEtaText" class="driver-eta">
+        <div class="driver-eta-main">{{ driverLiveEtaText }}</div>
+        <div v-if="liveEta?.distanceKm != null" class="driver-eta-sub">
+          {{ liveEta.distanceKm }} km
+          <span v-if="liveEta.arrivalClock"> · {{ liveEta.arrivalClock }}</span>
+        </div>
+      </div>
+
       <v-text-field
         v-model="searchQuery"
         placeholder="Yolcu veya konum ara"
@@ -147,6 +158,7 @@
             <div class="name">{{ ride.passengerName }}</div>
             <div class="path">{{ ride.from }} → {{ ride.to }}</div>
             <div v-if="ride.estimatedFare" class="fare">~{{ ride.estimatedFare }} ₺</div>
+            <div v-if="ride.tripPhase" class="phase">{{ ride.tripPhase }}</div>
           </div>
           <v-chip size="x-small" :color="statusColor(ride.status)" variant="flat">
             {{ ride.status }}
@@ -159,27 +171,40 @@
             size="small"
             color="primary"
             variant="flat"
+            :loading="rideStore.saving"
             @click="handleAccept(ride.id)"
           >
             Kabul Et
           </v-btn>
           <v-btn
-            v-if="canStart(ride)"
+            v-if="canMarkArrived(ride)"
+            size="small"
+            color="warning"
+            variant="flat"
+            :loading="rideStore.saving"
+            @click="handleArrived(ride.id)"
+          >
+            Yolcunun Yanına Geldim
+          </v-btn>
+          <v-btn
+            v-if="canMarkOnboard(ride)"
             size="small"
             color="primary"
             variant="flat"
-            @click="handleStart(ride.id)"
+            :loading="rideStore.saving"
+            @click="handleOnboard(ride.id)"
           >
-            Yolculuğu Başlat
+            Yolcu Alındı
           </v-btn>
           <v-btn
             v-if="canComplete(ride)"
             size="small"
             color="success"
             variant="flat"
+            :loading="rideStore.saving"
             @click="handleComplete(ride.id)"
           >
-            Tamamla
+            Yolculuğu Tamamla
           </v-btn>
         </div>
       </div>
@@ -188,12 +213,16 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import BottomSheet from '@/components/BottomSheet.vue'
 import RideMap from '@/components/RideMap.vue'
 import { RIDE_STATUS, TRIP_PHASE } from '@/data/mockData'
 import { useDriverStore } from '@/stores/driverStore'
 import { useRideStore } from '@/stores/rideStore'
+import {
+  fetchLiveEtaRoute,
+  shouldRefreshEtaRoute,
+} from '@/utils/liveEta'
 
 const rideStore = useRideStore()
 const driverStore = useDriverStore()
@@ -203,6 +232,14 @@ const searchQuery = ref('')
 const selectedId = ref(null)
 const infoMessage = ref('')
 const presenceError = ref('')
+const driverRoute = ref([])
+const liveEta = ref(null)
+
+let etaAbortController = null
+let etaRequestToken = 0
+let lastEtaAt = 0
+let lastEtaFrom = null
+let lastEtaPhaseKey = ''
 
 const lastLocationText = computed(() => driverStore.formatLastLocation())
 
@@ -228,6 +265,60 @@ const selectedRide = computed(() => {
   return filteredRides.value[0] || null
 })
 
+const activeAssignedRide = computed(() => {
+  const ride = selectedRide.value
+  if (!ride) return null
+  if (ride.status !== RIDE_STATUS.ACCEPTED) return null
+  if (ride.driverId && ride.driverId !== rideStore.currentUser?.id) return null
+  return ride
+})
+
+const selfTrackingDriver = computed(() => {
+  const ride = activeAssignedRide.value
+  if (!ride) return null
+  const lat = driverStore.driver?.lastLat
+  const lng = driverStore.driver?.lastLng
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+  return {
+    id: rideStore.currentUser?.id || 'self',
+    lat,
+    lng,
+    name: 'Siz',
+  }
+})
+
+const mapFitKey = computed(() => {
+  const ride = selectedRide.value
+  if (!ride) return 'driver-idle'
+  return `${ride.id}:${ride.tripPhaseKey || ride.tripPhase || ride.status}`
+})
+
+const mapRoute = computed(() => {
+  if (driverRoute.value.length > 1) return []
+  const ride = selectedRide.value
+  if (!ride) return []
+  if (
+    ride.tripPhase === TRIP_PHASE.EN_ROUTE ||
+    ride.tripPhase === TRIP_PHASE.ARRIVED ||
+    ride.tripPhase === TRIP_PHASE.PASSENGER_ONBOARD ||
+    ride.tripPhase === TRIP_PHASE.IN_PROGRESS
+  ) {
+    return []
+  }
+  return ride.route || []
+})
+
+const driverLiveEtaText = computed(() => {
+  const ride = activeAssignedRide.value
+  if (!ride || !liveEta.value) return ''
+  if (ride.tripPhase === TRIP_PHASE.ARRIVED) return 'Yolcu konumunda'
+  if (liveEta.value.minutes == null) return ''
+  if (liveEta.value.mode === 'pickup') {
+    return `Yolcuya ${liveEta.value.minutes} dk`
+  }
+  return `Varışa ${liveEta.value.minutes} dk`
+})
+
 onMounted(async () => {
   try {
     await driverStore.ensureLoaded(true)
@@ -239,15 +330,43 @@ onMounted(async () => {
   } catch (err) {
     presenceError.value = err?.message || 'Talepler yüklenemedi.'
   }
-  if (filteredRides.value[0]) {
-    selectedId.value = filteredRides.value[0].id
+
+  // Marketplace + kendi ride'lar
+  rideStore.subscribeToRideUpdates(null)
+
+  const preferred =
+    rideStore.rides.find(
+      (r) =>
+        r.status === RIDE_STATUS.ACCEPTED &&
+        r.driverId === rideStore.currentUser?.id,
+    ) || filteredRides.value[0]
+
+  if (preferred) {
+    selectedId.value = preferred.id
+    rideStore.setActiveRide(preferred.id)
   }
+
+  await refreshDriverEta({ force: true })
   nextTick(() => mapRef.value?.invalidate?.())
 })
 
 onUnmounted(() => {
+  etaAbortController?.abort()
   driverStore.stopLocationWatch()
+  void rideStore.unsubscribeRideUpdates()
 })
+
+watch(
+  () => [
+    selectedRide.value?.id,
+    selectedRide.value?.tripPhase,
+    driverStore.driver?.lastLat,
+    driverStore.driver?.lastLng,
+  ],
+  () => {
+    void refreshDriverEta({ force: false })
+  },
+)
 
 async function toggleOnline(value) {
   presenceError.value = ''
@@ -261,6 +380,7 @@ async function toggleOnline(value) {
 function selectRide(ride) {
   selectedId.value = ride.id
   rideStore.setActiveRide(ride.id)
+  void refreshDriverEta({ force: true })
 }
 
 function statusColor(status) {
@@ -276,15 +396,118 @@ function statusColor(status) {
   }
 }
 
-function canStart(ride) {
+function canMarkArrived(ride) {
   return (
     ride.status === RIDE_STATUS.ACCEPTED &&
     ride.tripPhase === TRIP_PHASE.EN_ROUTE
   )
 }
 
+function canMarkOnboard(ride) {
+  return (
+    ride.status === RIDE_STATUS.ACCEPTED &&
+    ride.tripPhase === TRIP_PHASE.ARRIVED
+  )
+}
+
 function canComplete(ride) {
-  return ride.tripPhase === TRIP_PHASE.IN_PROGRESS
+  return (
+    ride.status === RIDE_STATUS.ACCEPTED &&
+    (ride.tripPhase === TRIP_PHASE.IN_PROGRESS ||
+      ride.tripPhase === TRIP_PHASE.PASSENGER_ONBOARD)
+  )
+}
+
+function clearDriverEta() {
+  etaAbortController?.abort()
+  etaAbortController = null
+  etaRequestToken += 1
+  driverRoute.value = []
+  liveEta.value = null
+  lastEtaAt = 0
+  lastEtaFrom = null
+  lastEtaPhaseKey = ''
+}
+
+async function refreshDriverEta({ force = false } = {}) {
+  const ride = activeAssignedRide.value
+  if (!ride) {
+    clearDriverEta()
+    return
+  }
+
+  const phase = ride.tripPhase
+  const phaseKey = ride.tripPhaseKey || phase
+
+  if (phase === TRIP_PHASE.ARRIVED) {
+    driverRoute.value = []
+    liveEta.value = { mode: 'arrived', minutes: null, distanceKm: null, arrivalClock: null }
+    lastEtaPhaseKey = phaseKey
+    return
+  }
+
+  const lat = driverStore.driver?.lastLat
+  const lng = driverStore.driver?.lastLng
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return
+
+  const from = { lat, lng }
+  let to = null
+  let mode = 'pickup'
+
+  if (phase === TRIP_PHASE.EN_ROUTE) {
+    to = ride.fromCoords
+    mode = 'pickup'
+  } else if (
+    phase === TRIP_PHASE.PASSENGER_ONBOARD ||
+    phase === TRIP_PHASE.IN_PROGRESS
+  ) {
+    to = ride.toCoords
+    mode = 'destination'
+  } else {
+    clearDriverEta()
+    return
+  }
+
+  if (!to) return
+
+  if (phaseKey !== lastEtaPhaseKey) {
+    force = true
+    lastEtaPhaseKey = phaseKey
+  }
+
+  if (
+    !shouldRefreshEtaRoute({
+      lastAt: lastEtaAt,
+      lastCoords: lastEtaFrom,
+      nextCoords: from,
+      force,
+    })
+  ) {
+    return
+  }
+
+  const token = ++etaRequestToken
+  etaAbortController?.abort()
+  etaAbortController = new AbortController()
+
+  try {
+    const result = await fetchLiveEtaRoute(from, to, {
+      signal: etaAbortController.signal,
+    })
+    if (token !== etaRequestToken || !result) return
+
+    lastEtaAt = Date.now()
+    lastEtaFrom = from
+    driverRoute.value = result.route || []
+    liveEta.value = {
+      mode,
+      minutes: result.durationMin,
+      distanceKm: result.distanceKm,
+      arrivalClock: result.arrivalClock,
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError' || token !== etaRequestToken) return
+  }
 }
 
 async function handleAccept(rideId) {
@@ -292,22 +515,44 @@ async function handleAccept(rideId) {
     const ride = await rideStore.acceptRide(rideId)
     if (ride) {
       selectedId.value = ride.id
-      infoMessage.value = `${ride.passengerName} kabul edildi`
+      statusFilter.value = RIDE_STATUS.ACCEPTED
+      infoMessage.value = `${ride.passengerName} kabul edildi — yolcuya gidiyorsunuz`
+      await refreshDriverEta({ force: true })
     }
   } catch (err) {
     presenceError.value = err?.message || 'Kabul başarısız.'
   }
 }
 
-async function handleStart(rideId) {
+async function handleArrived(rideId) {
   try {
-    const ride = await rideStore.startRide(rideId)
+    const ride = await rideStore.markDriverArrived(rideId)
     if (ride) {
       selectedId.value = ride.id
-      infoMessage.value = `${ride.passengerName} yolculuğu başladı`
+      infoMessage.value = 'Yolcunun yanına vardınız'
+      await refreshDriverEta({ force: true })
     }
   } catch (err) {
-    presenceError.value = err?.message || 'Başlatma başarısız.'
+    presenceError.value = err?.message || 'Varış kaydı başarısız.'
+  }
+}
+
+async function handleOnboard(rideId) {
+  try {
+    infoMessage.value = 'Yolcu alındı'
+    const ride = await rideStore.markPassengerOnboard(rideId)
+    if (ride) {
+      selectedId.value = ride.id
+      // Kısa UI mesajı sonra in_progress
+      setTimeout(() => {
+        if (rideStore.rides.find((r) => r.id === rideId)?.tripPhase === TRIP_PHASE.IN_PROGRESS) {
+          infoMessage.value = 'Yolculuk devam ediyor'
+        }
+      }, 900)
+      await refreshDriverEta({ force: true })
+    }
+  } catch (err) {
+    presenceError.value = err?.message || 'Yolcu alındı kaydı başarısız.'
   }
 }
 
@@ -315,7 +560,9 @@ async function handleComplete(rideId) {
   try {
     const ride = await rideStore.completeRide(rideId)
     if (ride) {
+      clearDriverEta()
       infoMessage.value = `${ride.passengerName} tamamlandı`
+      statusFilter.value = RIDE_STATUS.COMPLETED
     }
   } catch (err) {
     presenceError.value = err?.message || 'Tamamlama başarısız.'
@@ -431,6 +678,27 @@ async function handleComplete(rideId) {
   margin-bottom: 2px;
 }
 
+.driver-eta {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+}
+
+.driver-eta-main {
+  font-weight: 800;
+  color: #065f46;
+  font-size: 1rem;
+}
+
+.driver-eta-sub {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  color: #047857;
+  font-weight: 600;
+}
+
 .ride-item {
   padding: 12px;
   border-radius: 14px;
@@ -469,8 +737,16 @@ async function handleComplete(rideId) {
   margin-top: 2px;
 }
 
+.phase {
+  font-size: 0.75rem;
+  color: #0a1628;
+  font-weight: 650;
+  margin-top: 4px;
+}
+
 .ride-item-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
 }

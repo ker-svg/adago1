@@ -44,18 +44,19 @@ Firebase kullanılmaz.
 
 ---
 
-## Mevcut Sürüm Kuralları (V2 — Aşama 3)
+## Mevcut Sürüm Kuralları (V2 — Aşama 4)
 
 Bu aşamada:
 
 * Supabase Auth + `profiles` gerçek kullanıcı kaynağıdır (`passenger` | `driver` | `admin`).
 * `drivers` + `vehicles` + onboarding + online/offline + gerçek cihaz GPS vardır.
 * Yolcu haritasında **gerçek online sürücüler** gösterilir (`get_online_drivers_for_map` + Realtime).
-* Yolculuklar Supabase `rides` tablosunda; lifecycle RPC: `create_ride` / `accept_ride` / `start_ride` / `complete_ride` / `cancel_ride`.
+* Yolculuklar Supabase `rides` tablosunda; lifecycle RPC: `create_ride` / `accept_ride` / `mark_driver_arrived` / `mark_passenger_onboard` / `complete_ride` / `cancel_ride`.
+* `trip_phase`: `assigning` → `en_route` → `arrived` → `passenger_onboard` → `in_progress` → `completed`.
+* Aktif ride: `rides` Realtime + canlı sürücü GPS + OSRM pickup/destination ETA (throttle).
 * Tamamlanan yolculukta DB içinde **%5 AdaGo komisyonu** hesaplanır (`complete_ride`).
-* Admin paneli: `/admin` + `/admin/login` (Auth + `profiles.role=admin` + RLS; hardcoded şifre yok).
-* `initialNearbyDrivers` yalnızca Home/Driver demo için kalabilir; PassengerView mock kullanmaz.
-* PostGIS / ride Realtime henüz yoktur.
+* Admin paneli ride phase gösterir; history completed/cancelled.
+* PostGIS henüz yoktur.
 * Leaflet, OSRM, Nominatim ve ücret sistemi korunur.
 
 ---
@@ -82,7 +83,7 @@ Yolcu haritasında gerçek online sürücüler + `drivers` Realtime + stale GPS 
 
 SQL: `supabase/migrations/002_5_live_drivers.sql`
 
-### Aşama 3 (şimdi)
+### Aşama 3 (tamamlandı)
 
 `rides` + admin RBAC + %5 komisyon + admin paneli
 
@@ -98,9 +99,11 @@ SQL: `supabase/migrations/003_2_ride_history.sql`
 
 Admin kurulum: `supabase/ADMIN_SETUP.md`
 
-### Aşama 4 (henüz değil)
+### Aşama 4 (şimdi)
 
-Supabase Realtime ile yolcu/sürücü ride senkronizasyonu (geniş)
+Canlı yolculuk takibi + arrived / passenger_onboard + rides Realtime + canlı ETA
+
+SQL: `supabase/migrations/004_realtime_trip_tracking.sql`
 
 ### Aşama 5 (henüz değil)
 
@@ -159,14 +162,16 @@ Talep durumu (`RIDE_STATUS` / DB):
 * Tamamlandı (`completed`) — %5 komisyon kesinleşir
 * İptal Edildi (`cancelled`) — komisyon yok
 
-Yolcu yolculuk fazı (`TRIP_PHASE`):
+Yolcu yolculuk fazı (`TRIP_PHASE` / DB `trip_phase`):
 
-* Sürücü atanıyor (`assigning`)
-* Sürücü yolda (`en_route`)
-* Yolculuk başladı (`in_progress`)
+* Sürücü aranıyor (`assigning`)
+* Sürücü size geliyor / Sürücü yolda (`en_route`)
+* Sürücü geldi (`arrived`)
+* Yolcu alındı (`passenger_onboard`)
+* Yolculuk devam ediyor (`in_progress`)
 * Yolculuk tamamlandı (`completed`)
 
-Manuel sürücü akışı: Kabul Et → Yolculuğu Başlat → Tamamla
+Manuel sürücü akışı: Kabul Et → Yolcunun Yanına Geldim → Yolcu Alındı → Yolculuğu Tamamla
 
 Komisyon: `gross_fare * 0.05` → `commission_amount`; `driver_net_amount = gross_fare - commission_amount` (DB `complete_ride` RPC).
 
@@ -204,6 +209,7 @@ Komisyon: `gross_fare * 0.05` → `commission_amount`; `driver_net_amount = gros
 11. Supabase `rides` + lifecycle RPC + %5 komisyon
 12. Admin paneli (RBAC + RLS + finans özeti)
 13. Yolculuk geçmişi (passenger/driver + admin kullanıcı/sürücü geçmişi)
+14. Canlı trip tracking: `rides` Realtime + arrived/onboard + OSRM ETA
 
 ---
 
@@ -295,20 +301,20 @@ Secret / `service_role` key frontend’e konulmaz.
 
 ---
 
-## Milestone Senaryosu (Aşama 3)
+## Milestone Senaryosu (Aşama 4)
 
-1. `003_rides_admin_commission.sql` + admin hesabı (`ADMIN_SETUP.md`).
-2. Yolcu ride oluşturur → DB `pending`.
-3. Sürücü kabul / başlat / tamamla → komisyon DB’de %5.
-4. Admin `/admin` → gerçek kullanıcılar, sürücüler, komisyonlar.
-5. Passenger haritası yalnızca gerçek online GPS sürücüleri gösterir.
+1. `004_realtime_trip_tracking.sql` çalıştır.
+2. Yolcu ride oluşturur → Driver pending görür.
+3. Driver Kabul Et → Passenger refresh olmadan `en_route` + canlı GPS.
+4. Driver Yanına Geldim → `arrived`; Yolcu Alındı → `in_progress` + destination ETA.
+5. Tamamla → %5 komisyon; History + Admin phase doğru.
 
 ---
 
 ## Gelecek Sürümler
 
-* Aşama 4–5: yukarıdaki migration sırası (onaysız uygulanmaz)
-* Değerlendirme sistemi, yolculuk geçmişi UI iyileştirmeleri (sonraki işler)
+* Aşama 5: PostGIS (onaysız uygulanmaz)
+* Değerlendirme sistemi, ödeme (sonraki işler)
 
 ---
 
@@ -324,7 +330,7 @@ Secret / `service_role` key frontend’e konulmaz.
 - Her yeni özellik için loading, empty ve error durumlarını değerlendir.
 - Hardcoded verileri component içine yazma; mockData, store veya Supabase kullan.
 - Business logic'i mümkün olduğunca componentlerden ayır.
-- İstenmeyen aşamayı uygulamadan ekleme; Aşama 4–5 (geniş Realtime / PostGIS) için ayrı onay bekle.
+- İstenmeyen aşamayı uygulamadan ekleme; Aşama 5 (PostGIS) için ayrı onay bekle.
 - Yeni dependency eklemeden önce mevcut dependency'leri kontrol et.
 - Değişiklik yaptıktan sonra npm run build çalıştır.
 - Build hatası varsa çözmeden görevi tamamlanmış kabul etme.

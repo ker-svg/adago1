@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import {
   RIDE_STATUS,
   TRIP_PHASE,
+  TRIP_PHASE_FROM_DB,
   initialNearbyDrivers,
 } from '@/data/mockData'
 import { calculateFare, estimateEtaMinutes, haversineKm } from '@/utils/fare'
@@ -20,12 +21,7 @@ const STATUS_FROM_DB = {
   cancelled: RIDE_STATUS.CANCELLED,
 }
 
-const PHASE_FROM_DB = {
-  assigning: TRIP_PHASE.ASSIGNING,
-  en_route: TRIP_PHASE.EN_ROUTE,
-  in_progress: TRIP_PHASE.IN_PROGRESS,
-  completed: TRIP_PHASE.COMPLETED,
-}
+const RIDES_CHANNEL = 'adago-rides-tracking'
 
 function numOrNull(value) {
   if (value == null || value === '') return null
@@ -85,12 +81,18 @@ function mapRideRow(row) {
           rating: numOrNull(row.driver_rating) || 5,
           vehicleType: row.driver_vehicle_type || '—',
           etaMin: 5,
+          lat: numOrNull(row.driver_lat),
+          lng: numOrNull(row.driver_lng),
+          lastLocationAt: row.driver_last_location_at || null,
         }
       : null,
     driverId: row.driver_id || null,
     driverName: row.driver_name || null,
     status: STATUS_FROM_DB[row.status] || row.status,
-    tripPhase: row.trip_phase ? PHASE_FROM_DB[row.trip_phase] || row.trip_phase : null,
+    tripPhase: row.trip_phase
+      ? TRIP_PHASE_FROM_DB[row.trip_phase] || row.trip_phase
+      : null,
+    tripPhaseKey: row.trip_phase || null,
     grossFare,
     commissionRate,
     commissionAmount,
@@ -116,6 +118,8 @@ function upsertRideList(list, ride) {
 }
 
 let driverSimTimer = null
+let ridesChannel = null
+let subscribedRideId = null
 
 export const useRideStore = defineStore('ride', () => {
   const authStore = useAuthStore()
@@ -409,10 +413,15 @@ export const useRideStore = defineStore('ride', () => {
   }
 
   async function startRide(rideId) {
+    // Aşama 4: start_ride yerine mark_passenger_onboard kullanılır
+    return markPassengerOnboard(rideId)
+  }
+
+  async function markDriverArrived(rideId) {
     saving.value = true
     errorMessage.value = ''
     try {
-      const { data, error } = await supabase.rpc('start_ride', {
+      const { data, error } = await supabase.rpc('mark_driver_arrived', {
         p_ride_id: rideId,
       })
       if (error) throw error
@@ -420,10 +429,121 @@ export const useRideStore = defineStore('ride', () => {
       rides.value = upsertRideList(rides.value, ride)
       return ride
     } catch (err) {
-      errorMessage.value = mapAuthError(err) || 'Başlatma başarısız.'
+      errorMessage.value = mapAuthError(err) || 'Varış kaydı başarısız.'
       throw new Error(errorMessage.value)
     } finally {
       saving.value = false
+    }
+  }
+
+  async function markPassengerOnboard(rideId) {
+    saving.value = true
+    errorMessage.value = ''
+    try {
+      const { data, error } = await supabase.rpc('mark_passenger_onboard', {
+        p_ride_id: rideId,
+      })
+      if (error) throw error
+      const ride = mapRideRow(data)
+      rides.value = upsertRideList(rides.value, ride)
+      return ride
+    } catch (err) {
+      errorMessage.value = mapAuthError(err) || 'Yolcu alındı kaydı başarısız.'
+      throw new Error(errorMessage.value)
+    } finally {
+      saving.value = false
+    }
+  }
+
+  async function fetchRideTracking(rideId) {
+    if (!rideId) return null
+    try {
+      const { data, error } = await supabase.rpc('get_ride_tracking', {
+        p_ride_id: rideId,
+      })
+      if (error) throw error
+      const row = typeof data === 'string' ? JSON.parse(data) : data
+      const ride = mapRideRow(row)
+      if (ride) {
+        rides.value = upsertRideList(rides.value, ride)
+        if (
+          ride.status !== RIDE_STATUS.COMPLETED &&
+          ride.status !== RIDE_STATUS.CANCELLED
+        ) {
+          activeRideId.value = ride.id
+        }
+      }
+      return ride
+    } catch (err) {
+      console.warn('[AdaGo] ride tracking fetch:', err?.message || err)
+      return null
+    }
+  }
+
+  function handleRideRealtime(payload) {
+    const event = payload?.eventType || payload?.event
+    if (event === 'DELETE') {
+      const oldId = payload?.old?.id
+      if (oldId) {
+        rides.value = rides.value.filter((r) => r.id !== oldId)
+        if (activeRideId.value === oldId) activeRideId.value = null
+      }
+      return
+    }
+
+    const row = payload?.new
+    if (!row?.id) {
+      void fetchMyRides()
+      return
+    }
+
+    // İsim zenginleştirmesi için tracking RPC
+    void fetchRideTracking(row.id)
+  }
+
+  function subscribeToRideUpdates(rideId = null) {
+    if (ridesChannel && subscribedRideId === (rideId || '*')) {
+      return ridesChannel
+    }
+    void unsubscribeRideUpdates()
+
+    const filter = rideId ? `id=eq.${rideId}` : undefined
+    subscribedRideId = rideId || '*'
+
+    let channel = supabase.channel(
+      rideId ? `${RIDES_CHANNEL}-${rideId}` : `${RIDES_CHANNEL}-all`,
+    )
+
+    const config = {
+      event: '*',
+      schema: 'public',
+      table: 'rides',
+    }
+    if (filter) config.filter = filter
+
+    channel = channel.on('postgres_changes', config, handleRideRealtime)
+    ridesChannel = channel.subscribe((status) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.warn('[AdaGo] rides Realtime bağlantısı koptu')
+        if (rideId) void fetchRideTracking(rideId)
+        else void fetchMyRides()
+      }
+    })
+    return ridesChannel
+  }
+
+  async function unsubscribeRideUpdates() {
+    if (!ridesChannel) {
+      subscribedRideId = null
+      return
+    }
+    const ch = ridesChannel
+    ridesChannel = null
+    subscribedRideId = null
+    try {
+      await supabase.removeChannel(ch)
+    } catch {
+      // ignore
     }
   }
 
@@ -483,6 +603,7 @@ export const useRideStore = defineStore('ride', () => {
   }
 
   function resetLocal() {
+    void unsubscribeRideUpdates()
     rides.value = []
     activeRideId.value = null
     errorMessage.value = ''
@@ -515,13 +636,18 @@ export const useRideStore = defineStore('ride', () => {
     stopDriverSimulation,
     findNearestDriver,
     fetchMyRides,
+    fetchRideTracking,
     createRide,
     setActiveRide,
     acceptRide,
     startRide,
+    markDriverArrived,
+    markPassengerOnboard,
     completeRide,
     cancelRide,
     filterRides,
+    subscribeToRideUpdates,
+    unsubscribeRideUpdates,
     resetLocal,
   }
 })

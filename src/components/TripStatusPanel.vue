@@ -9,19 +9,45 @@
 
     <div class="route">{{ ride.from }} → {{ ride.to }}</div>
 
-    <div v-if="ride.assignedDriver" class="driver-box mt-3">
+    <div v-if="driverInfo" class="driver-box mt-3">
       <div class="driver-avatar">🚗</div>
       <div class="flex-grow-1">
-        <div class="driver-name">{{ ride.assignedDriver.name }}</div>
+        <div class="driver-name">{{ driverInfo.name }}</div>
         <div class="driver-meta">
-          ⭐ {{ ride.assignedDriver.rating }} · {{ ride.assignedDriver.vehicleType }}
+          <span v-if="driverInfo.rating">⭐ {{ driverInfo.rating }}</span>
+          <span v-if="driverInfo.vehicleType"> · {{ driverInfo.vehicleType }}</span>
         </div>
       </div>
-      <div class="eta">
-        <div class="eta-value">{{ ride.assignedDriver.etaMin }} dk</div>
-        <div class="eta-label">varış</div>
+      <div v-if="etaPrimary" class="eta">
+        <div class="eta-value">{{ etaPrimary }}</div>
+        <div class="eta-label">{{ etaLabel }}</div>
       </div>
     </div>
+
+    <div v-if="etaSecondary" class="eta-card mt-3">
+      <div class="eta-card-row">
+        <span>{{ etaSecondaryLabel }}</span>
+        <strong>{{ etaSecondary }}</strong>
+      </div>
+      <div v-if="etaDistance" class="eta-card-row muted">
+        <span>Kalan mesafe</span>
+        <strong>{{ etaDistance }}</strong>
+      </div>
+      <div v-if="etaArrivalClock" class="eta-card-row muted">
+        <span>Tahmini varış</span>
+        <strong>{{ etaArrivalClock }}</strong>
+      </div>
+    </div>
+
+    <v-alert
+      v-if="staleWarning"
+      type="warning"
+      variant="tonal"
+      density="compact"
+      class="mt-3"
+    >
+      {{ staleWarning }}
+    </v-alert>
 
     <div class="steps mt-3">
       <div
@@ -52,27 +78,33 @@ import { computed } from 'vue'
 import { TRIP_PHASE } from '@/data/mockData'
 
 const props = defineProps({
-  ride: {
-    type: Object,
-    required: true,
-  },
+  ride: { type: Object, required: true },
+  /** Canlı ETA: { minutes, distanceKm, arrivalClock, mode: 'pickup'|'destination'|'arrived' } */
+  liveEta: { type: Object, default: null },
+  staleWarning: { type: String, default: '' },
 })
 
 const steps = [
   { key: 'assign', label: TRIP_PHASE.ASSIGNING, index: 0 },
   { key: 'enroute', label: TRIP_PHASE.EN_ROUTE, index: 1 },
-  { key: 'progress', label: TRIP_PHASE.IN_PROGRESS, index: 2 },
-  { key: 'done', label: TRIP_PHASE.COMPLETED, index: 3 },
+  { key: 'arrived', label: TRIP_PHASE.ARRIVED, index: 2 },
+  { key: 'onboard', label: TRIP_PHASE.PASSENGER_ONBOARD, index: 3 },
+  { key: 'progress', label: TRIP_PHASE.IN_PROGRESS, index: 4 },
+  { key: 'done', label: TRIP_PHASE.COMPLETED, index: 5 },
 ]
 
 const currentIndex = computed(() => {
   switch (props.ride.tripPhase) {
     case TRIP_PHASE.EN_ROUTE:
       return 1
-    case TRIP_PHASE.IN_PROGRESS:
+    case TRIP_PHASE.ARRIVED:
       return 2
-    case TRIP_PHASE.COMPLETED:
+    case TRIP_PHASE.PASSENGER_ONBOARD:
       return 3
+    case TRIP_PHASE.IN_PROGRESS:
+      return 4
+    case TRIP_PHASE.COMPLETED:
+      return 5
     case TRIP_PHASE.ASSIGNING:
     default:
       return 0
@@ -80,10 +112,13 @@ const currentIndex = computed(() => {
 })
 
 const phaseTitle = computed(() => {
-  if (props.ride.tripPhase === TRIP_PHASE.ASSIGNING) return 'Eşleştiriliyor'
-  if (props.ride.tripPhase === TRIP_PHASE.EN_ROUTE) return 'Sürücün yolda'
-  if (props.ride.tripPhase === TRIP_PHASE.IN_PROGRESS) return 'Yolculuk devam ediyor'
-  if (props.ride.tripPhase === TRIP_PHASE.COMPLETED) return 'Yolculuk bitti'
+  const p = props.ride.tripPhase
+  if (p === TRIP_PHASE.ASSIGNING) return 'Sürücü aranıyor'
+  if (p === TRIP_PHASE.EN_ROUTE) return 'Sürücünüz geliyor'
+  if (p === TRIP_PHASE.ARRIVED) return 'Sürücünüz geldi'
+  if (p === TRIP_PHASE.PASSENGER_ONBOARD) return 'Yolcu alındı'
+  if (p === TRIP_PHASE.IN_PROGRESS) return 'Yolculuk devam ediyor'
+  if (p === TRIP_PHASE.COMPLETED) return 'Yolculuk tamamlandı'
   return 'Yolculuk durumu'
 })
 
@@ -91,14 +126,65 @@ const phaseColor = computed(() => {
   switch (props.ride.tripPhase) {
     case TRIP_PHASE.EN_ROUTE:
       return 'info'
+    case TRIP_PHASE.ARRIVED:
+      return 'warning'
+    case TRIP_PHASE.PASSENGER_ONBOARD:
     case TRIP_PHASE.IN_PROGRESS:
       return 'primary'
     case TRIP_PHASE.COMPLETED:
       return 'success'
     default:
-      return 'warning'
+      return 'secondary'
   }
 })
+
+const driverInfo = computed(() => {
+  if (props.ride.assignedDriver) return props.ride.assignedDriver
+  if (props.ride.driverName || props.ride.driverId) {
+    return {
+      name: props.ride.driverName || 'Sürücü',
+      rating: null,
+      vehicleType: null,
+    }
+  }
+  return null
+})
+
+const etaPrimary = computed(() => {
+  if (props.liveEta?.mode === 'arrived') return 'Konumda'
+  if (props.liveEta?.minutes != null) return `${props.liveEta.minutes} dk`
+  if (props.ride.assignedDriver?.etaMin != null && props.ride.tripPhase === TRIP_PHASE.EN_ROUTE) {
+    return `${props.ride.assignedDriver.etaMin} dk`
+  }
+  return null
+})
+
+const etaLabel = computed(() => {
+  if (props.liveEta?.mode === 'destination') return 'varış'
+  if (props.liveEta?.mode === 'arrived') return ''
+  return 'yanınızda'
+})
+
+const etaSecondary = computed(() => {
+  if (props.liveEta?.mode === 'arrived') return 'Sürücü konumda'
+  if (props.liveEta?.minutes != null) {
+    return props.liveEta.mode === 'destination'
+      ? `Varışa yaklaşık ${props.liveEta.minutes} dk`
+      : `Sürücünüz yaklaşık ${props.liveEta.minutes} dk sonra yanınızda`
+  }
+  return null
+})
+
+const etaSecondaryLabel = computed(() =>
+  props.liveEta?.mode === 'destination' ? 'Varış ETA' : 'Pickup ETA',
+)
+
+const etaDistance = computed(() => {
+  if (props.liveEta?.distanceKm == null) return null
+  return `${props.liveEta.distanceKm} km`
+})
+
+const etaArrivalClock = computed(() => props.liveEta?.arrivalClock || null)
 </script>
 
 <style scoped>
@@ -154,6 +240,32 @@ const phaseColor = computed(() => {
 .eta-label {
   font-size: 0.7rem;
   color: #6b7280;
+}
+
+.eta-card {
+  padding: 12px;
+  border-radius: 14px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+}
+
+.eta-card-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.88rem;
+  color: #065f46;
+  font-weight: 650;
+}
+
+.eta-card-row + .eta-card-row {
+  margin-top: 6px;
+}
+
+.eta-card-row.muted {
+  color: #047857;
+  font-weight: 600;
+  font-size: 0.82rem;
 }
 
 .steps {

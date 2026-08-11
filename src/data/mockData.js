@@ -7,10 +7,22 @@ export const RIDE_STATUS = {
 
 /** Yolcu yolculuk yaşam döngüsü */
 export const TRIP_PHASE = {
-  ASSIGNING: 'Sürücü atanıyor',
-  EN_ROUTE: 'Sürücü yolda',
-  IN_PROGRESS: 'Yolculuk başladı',
+  ASSIGNING: 'Sürücü aranıyor',
+  EN_ROUTE: 'Sürücü size geliyor',
+  ARRIVED: 'Sürücü geldi',
+  PASSENGER_ONBOARD: 'Yolcu alındı',
+  IN_PROGRESS: 'Yolculuk devam ediyor',
   COMPLETED: 'Yolculuk tamamlandı',
+}
+
+/** DB trip_phase → UI */
+export const TRIP_PHASE_FROM_DB = {
+  assigning: TRIP_PHASE.ASSIGNING,
+  en_route: TRIP_PHASE.EN_ROUTE,
+  arrived: TRIP_PHASE.ARRIVED,
+  passenger_onboard: TRIP_PHASE.PASSENGER_ONBOARD,
+  in_progress: TRIP_PHASE.IN_PROGRESS,
+  completed: TRIP_PHASE.COMPLETED,
 }
 
 export const FARE_CONFIG = {

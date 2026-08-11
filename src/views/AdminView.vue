@@ -177,12 +177,13 @@
                   <th>Sürücü</th>
                   <th>Rota</th>
                   <th>Durum</th>
+                  <th>Faz</th>
                   <th>Ücret</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="adminStore.rides.length === 0">
-                  <td colspan="6" class="empty">Yolculuk yok.</td>
+                  <td colspan="7" class="empty">Yolculuk yok.</td>
                 </tr>
                 <tr v-for="ride in adminStore.rides" :key="ride.id">
                   <td>{{ formatDate(ride.createdAt) }}</td>
@@ -191,6 +192,9 @@
                   <td>{{ ride.from }} → {{ ride.to }}</td>
                   <td>
                     <span class="pill status">{{ statusLabel(ride.status) }}</span>
+                  </td>
+                  <td>
+                    <span class="pill phase">{{ tripPhaseLabel(ride.tripPhase) }}</span>
                   </td>
                   <td>
                     {{
@@ -533,6 +537,18 @@ function statusLabel(status) {
   return map[status] || status
 }
 
+function tripPhaseLabel(phase) {
+  const map = {
+    assigning: 'Sürücü aranıyor',
+    en_route: 'Sürücü yolda',
+    arrived: 'Sürücü geldi',
+    passenger_onboard: 'Yolcu alındı',
+    in_progress: 'Yolculuk devam ediyor',
+    completed: 'Tamamlandı',
+  }
+  return map[phase] || phase || '—'
+}
+
 function commissionStatusLabel(status) {
   if (status === 'pending') return 'Bekleyen'
   if (status === 'collected') return 'Tahsil edildi'
@@ -782,6 +798,16 @@ th {
 .pill.offline {
   background: #f3f4f6;
   color: #6b7280;
+}
+
+.pill.status {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.pill.phase {
+  background: #ecfdf5;
+  color: #065f46;
 }
 
 .pill.pending {

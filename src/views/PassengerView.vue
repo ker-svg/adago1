@@ -6,16 +6,23 @@
         :from-coords="mapFrom"
         :to-coords="mapTo"
         :route="mapRoute"
-        :drivers="passengerMapDrivers"
+        :drivers="mapOnlineDrivers"
+        :tracking-driver="trackingDriver"
+        :driver-route="driverRoute"
+        :fit-key="mapFitKey"
         :pick-mode="activeOwnedRide ? null : pickMode"
-        :fit-drivers="!fromCoords && !toCoords"
+        :fit-drivers="!activeOwnedRide && !fromCoords && !toCoords"
         @pick="onMapPick"
       />
     </div>
 
     <BottomSheet :compact="!activeOwnedRide">
       <template v-if="activeOwnedRide">
-        <TripStatusPanel :ride="activeOwnedRide">
+        <TripStatusPanel
+          :ride="activeOwnedRide"
+          :live-eta="liveEta"
+          :stale-warning="staleGpsWarning"
+        >
           <v-btn
             v-if="canCancel(activeOwnedRide)"
             class="mt-3"
@@ -218,6 +225,7 @@ import RideMap from '@/components/RideMap.vue'
 import TripStatusPanel from '@/components/TripStatusPanel.vue'
 import { RIDE_STATUS, TRIP_PHASE } from '@/data/mockData'
 import {
+  DRIVER_LOCATION_STALE_MS,
   qualifiesForPassengerMap,
   useDriverStore,
 } from '@/stores/driverStore'
@@ -229,6 +237,10 @@ import {
   mergeLocationResults,
   searchLocations,
 } from '@/utils/geocoding'
+import {
+  fetchLiveEtaRoute,
+  shouldRefreshEtaRoute,
+} from '@/utils/liveEta'
 import { fetchDrivingRoute } from '@/utils/route'
 
 const SEARCH_DEBOUNCE_MS = 400
@@ -240,7 +252,7 @@ const mapRef = ref(null)
 
 /**
  * Passenger haritası TEK sürücü kaynağı: driverStore.onlineDrivers (RPC).
- * nearbyDrivers / initialNearbyDrivers / mockDriver / LocalStorage YOK.
+ * Aktif ride varken yalnız assigned driver takip edilir.
  */
 const passengerMapDrivers = computed(() =>
   (driverStore.onlineDrivers || []).filter(qualifiesForPassengerMap),
@@ -259,6 +271,10 @@ const showDetails = ref(false)
 const submitting = ref(false)
 const routeLoading = ref(false)
 const errorMessage = ref('')
+const driverRoute = ref([])
+const liveEta = ref(null)
+/** Stale prune sonrası son bilinen sürücü konumu */
+const lastKnownTracking = ref(null)
 
 const fromItems = ref(getLocalLocationItems())
 const toItems = ref(getLocalLocationItems())
@@ -283,6 +299,12 @@ let toSearchAbort = null
 let lastFromQuery = ''
 let lastToQuery = ''
 
+let etaAbortController = null
+let etaRequestToken = 0
+let lastEtaAt = 0
+let lastEtaFrom = null
+let lastEtaPhaseKey = ''
+
 const activeOwnedRide = computed(() => {
   const ride = rideStore.activeRide
   if (!ride) return null
@@ -297,15 +319,114 @@ const activeOwnedRide = computed(() => {
   return ride
 })
 
+const isTrackingActive = computed(() => {
+  const ride = activeOwnedRide.value
+  if (!ride || isCompleted(ride)) return false
+  return Boolean(ride.driverId) && ride.status === RIDE_STATUS.ACCEPTED
+})
+
+const assignedOnlineDriver = computed(() => {
+  const ride = activeOwnedRide.value
+  if (!ride?.driverId) return null
+  // Takip için freshness filtresi yok — stale UI ayrı
+  return (
+    (driverStore.onlineDrivers || []).find((d) => d.id === ride.driverId) ||
+    null
+  )
+})
+
+const trackingDriver = computed(() => {
+  if (!isTrackingActive.value) return null
+  const ride = activeOwnedRide.value
+  const d = assignedOnlineDriver.value
+  if (d && Number.isFinite(d.lat) && Number.isFinite(d.lng)) {
+    return {
+      id: d.id,
+      lat: d.lat,
+      lng: d.lng,
+      name: ride?.assignedDriver?.name || d.name || 'Sürücü',
+    }
+  }
+  if (
+    lastKnownTracking.value &&
+    lastKnownTracking.value.id === ride?.driverId
+  ) {
+    return {
+      ...lastKnownTracking.value,
+      name:
+        ride?.assignedDriver?.name ||
+        lastKnownTracking.value.name ||
+        'Sürücü',
+    }
+  }
+  const ad = ride?.assignedDriver
+  if (
+    ad &&
+    Number.isFinite(Number(ad.lat)) &&
+    Number.isFinite(Number(ad.lng))
+  ) {
+    return {
+      id: ad.id,
+      lat: Number(ad.lat),
+      lng: Number(ad.lng),
+      name: ad.name || 'Sürücü',
+    }
+  }
+  return null
+})
+
+const mapOnlineDrivers = computed(() => {
+  // Aktif takip: diğer online sürücüleri gizle
+  if (isTrackingActive.value) return []
+  return passengerMapDrivers.value
+})
+
+const mapFitKey = computed(() => {
+  const ride = activeOwnedRide.value
+  if (!ride) return 'idle'
+  return `${ride.id}:${ride.tripPhaseKey || ride.tripPhase || ride.status}`
+})
+
+const staleGpsWarning = computed(() => {
+  if (!isTrackingActive.value) return ''
+  const d = assignedOnlineDriver.value || lastKnownTracking.value
+  if (!d?.lastLocationAt && !trackingDriver.value) {
+    return 'Sürücü konumu geçici olarak güncellenemiyor.'
+  }
+  if (!d?.lastLocationAt) {
+    return trackingDriver.value
+      ? 'Sürücü konumu geçici olarak güncellenemiyor.'
+      : 'Sürücü konumu geçici olarak güncellenemiyor.'
+  }
+  const age = Date.now() - new Date(d.lastLocationAt).getTime()
+  if (!Number.isFinite(age) || age > DRIVER_LOCATION_STALE_MS) {
+    return 'Sürücü konumu geçici olarak güncellenemiyor.'
+  }
+  return ''
+})
+
 const mapFrom = computed(
   () => activeOwnedRide.value?.fromCoords || fromCoords.value,
 )
 const mapTo = computed(
   () => activeOwnedRide.value?.toCoords || toCoords.value,
 )
-const mapRoute = computed(
-  () => activeOwnedRide.value?.route || previewRoute.value,
-)
+const mapRoute = computed(() => {
+  // Canlı takip rotası ayrı (driverRoute); A/B rotasını karıştırma
+  if (isTrackingActive.value && driverRoute.value.length > 1) return []
+  if (isTrackingActive.value) {
+    const phase = activeOwnedRide.value?.tripPhase
+    if (
+      phase === TRIP_PHASE.EN_ROUTE ||
+      phase === TRIP_PHASE.ARRIVED ||
+      phase === TRIP_PHASE.PASSENGER_ONBOARD ||
+      phase === TRIP_PHASE.IN_PROGRESS
+    ) {
+      return []
+    }
+  }
+  return activeOwnedRide.value?.route || previewRoute.value
+})
 
 const farePreview = computed(() => {
   if (routeLoading.value) return null
@@ -334,12 +455,18 @@ const canRequest = computed(
 onMounted(async () => {
   passengerName.value = rideStore.currentUser?.name || ''
   phone.value = rideStore.currentUser?.phone || ''
-  // 1) RPC fetch → 2) Realtime; mock/nearbyDrivers asla bağlanmaz
   await Promise.all([
     rideStore.fetchMyRides(),
     driverStore.fetchOnlineDrivers(),
   ])
   driverStore.subscribeToDriverLocations()
+
+  const ride = activeOwnedRide.value
+  if (ride?.id) {
+    rideStore.subscribeToRideUpdates(ride.id)
+    await refreshLiveTracking({ force: true })
+  }
+
   nextTick(() => mapRef.value?.invalidate?.())
 })
 
@@ -349,11 +476,18 @@ onUnmounted(() => {
   fromSearchAbort?.abort()
   toSearchAbort?.abort()
   routeAbortController?.abort()
+  etaAbortController?.abort()
   void driverStore.unsubscribeDriverLocations()
+  void rideStore.unsubscribeRideUpdates()
 })
 
-watch(activeOwnedRide, (ride) => {
-  if (!ride) return
+watch(activeOwnedRide, (ride, prev) => {
+  if (!ride) {
+    void rideStore.unsubscribeRideUpdates()
+    clearLiveTracking()
+    return
+  }
+
   fromCoords.value = ride.fromCoords
   toCoords.value = ride.toCoords
   previewRoute.value = ride.route || []
@@ -363,7 +497,41 @@ watch(activeOwnedRide, (ride) => {
     isFallback: false,
   }
   routeLoading.value = false
+
+  if (ride.id && ride.id !== prev?.id) {
+    rideStore.subscribeToRideUpdates(ride.id)
+  }
+
+  if (
+    ride.tripPhase !== prev?.tripPhase ||
+    ride.status !== prev?.status ||
+    ride.id !== prev?.id
+  ) {
+    void refreshLiveTracking({ force: true })
+  }
 })
+
+watch(
+  () => [
+    assignedOnlineDriver.value?.lat,
+    assignedOnlineDriver.value?.lng,
+    assignedOnlineDriver.value?.lastLocationAt,
+  ],
+  () => {
+    const d = assignedOnlineDriver.value
+    if (d && Number.isFinite(d.lat) && Number.isFinite(d.lng)) {
+      lastKnownTracking.value = {
+        id: d.id,
+        lat: d.lat,
+        lng: d.lng,
+        name: d.name,
+        lastLocationAt: d.lastLocationAt,
+      }
+    }
+    if (!isTrackingActive.value) return
+    void refreshLiveTracking({ force: false })
+  },
+)
 
 function locationSubtitle(location) {
   if (!location) return undefined
@@ -386,13 +554,20 @@ function isSamePoint(a, b) {
 }
 
 function canCancel(ride) {
+  if (isCompleted(ride)) return false
+  // Yolculuk başladıktan sonra iptal yok (onboard / in_progress)
+  if (
+    ride.tripPhase === TRIP_PHASE.PASSENGER_ONBOARD ||
+    ride.tripPhase === TRIP_PHASE.IN_PROGRESS
+  ) {
+    return false
+  }
   return (
-    !isCompleted(ride) &&
-    (ride.tripPhase === TRIP_PHASE.ASSIGNING ||
-      ride.tripPhase === TRIP_PHASE.EN_ROUTE ||
-      ride.tripPhase === TRIP_PHASE.IN_PROGRESS ||
-      ride.status === RIDE_STATUS.PENDING ||
-      ride.status === RIDE_STATUS.ACCEPTED)
+    ride.tripPhase === TRIP_PHASE.ASSIGNING ||
+    ride.tripPhase === TRIP_PHASE.EN_ROUTE ||
+    ride.tripPhase === TRIP_PHASE.ARRIVED ||
+    ride.status === RIDE_STATUS.PENDING ||
+    ride.status === RIDE_STATUS.ACCEPTED
   )
 }
 
@@ -401,6 +576,102 @@ function isCompleted(ride) {
     ride.tripPhase === TRIP_PHASE.COMPLETED ||
     ride.status === RIDE_STATUS.COMPLETED
   )
+}
+
+function clearLiveTracking() {
+  etaAbortController?.abort()
+  etaAbortController = null
+  etaRequestToken += 1
+  driverRoute.value = []
+  liveEta.value = null
+  lastKnownTracking.value = null
+  lastEtaAt = 0
+  lastEtaFrom = null
+  lastEtaPhaseKey = ''
+}
+
+async function refreshLiveTracking({ force = false } = {}) {
+  const ride = activeOwnedRide.value
+  if (!ride || !isTrackingActive.value) {
+    clearLiveTracking()
+    return
+  }
+
+  const phase = ride.tripPhase
+  const phaseKey = ride.tripPhaseKey || phase
+
+  if (phase === TRIP_PHASE.ARRIVED) {
+    driverRoute.value = []
+    liveEta.value = { mode: 'arrived', minutes: null, distanceKm: null, arrivalClock: null }
+    lastEtaPhaseKey = phaseKey
+    return
+  }
+
+  const driver = trackingDriver.value
+  if (!driver) {
+    // Son bilinen rota kalabilir; ETA güncellenmez
+    return
+  }
+
+  const from = { lat: driver.lat, lng: driver.lng }
+  let to = null
+  let mode = 'pickup'
+
+  if (phase === TRIP_PHASE.EN_ROUTE) {
+    to = ride.fromCoords
+    mode = 'pickup'
+  } else if (
+    phase === TRIP_PHASE.PASSENGER_ONBOARD ||
+    phase === TRIP_PHASE.IN_PROGRESS
+  ) {
+    to = ride.toCoords
+    mode = 'destination'
+  } else {
+    clearLiveTracking()
+    return
+  }
+
+  if (!to) return
+
+  if (phaseKey !== lastEtaPhaseKey) {
+    force = true
+    lastEtaPhaseKey = phaseKey
+  }
+
+  if (
+    !shouldRefreshEtaRoute({
+      lastAt: lastEtaAt,
+      lastCoords: lastEtaFrom,
+      nextCoords: from,
+      force,
+    })
+  ) {
+    return
+  }
+
+  const token = ++etaRequestToken
+  etaAbortController?.abort()
+  etaAbortController = new AbortController()
+
+  try {
+    const result = await fetchLiveEtaRoute(from, to, {
+      signal: etaAbortController.signal,
+    })
+    if (token !== etaRequestToken) return
+    if (!result) return
+
+    lastEtaAt = Date.now()
+    lastEtaFrom = from
+    driverRoute.value = result.route || []
+    liveEta.value = {
+      mode,
+      minutes: result.durationMin,
+      distanceKm: result.distanceKm,
+      arrivalClock: result.arrivalClock,
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError' || token !== etaRequestToken) return
+  }
 }
 
 function ensureItemInList(itemsRef, location) {
@@ -603,6 +874,7 @@ function resetRouteUi() {
 
 function startFresh() {
   rideStore.setActiveRide(null)
+  clearLiveTracking()
   resetRouteUi()
 }
 
@@ -707,6 +979,10 @@ async function submitRide() {
     })
 
     pickMode.value = null
+    const created = rideStore.activeRide
+    if (created?.id) {
+      rideStore.subscribeToRideUpdates(created.id)
+    }
   } catch (err) {
     errorMessage.value = err.message || 'Talep oluşturulamadı.'
   } finally {

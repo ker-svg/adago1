@@ -15,10 +15,17 @@ const props = defineProps({
   fromCoords: { type: Object, default: null },
   toCoords: { type: Object, default: null },
   route: { type: Array, default: () => [] },
+  /** Online sürücü listesi (passenger idle) */
   drivers: { type: Array, default: () => [] },
+  /** Aktif takip edilen sürücü GPS { id, lat, lng, name } */
+  trackingDriver: { type: Object, default: null },
+  /** Driver → pickup/destination OSRM rotası */
+  driverRoute: { type: Array, default: () => [] },
   pickMode: { type: String, default: null },
   interactive: { type: Boolean, default: true },
   fitDrivers: { type: Boolean, default: false },
+  /** Phase değişince fit tetiklemek için (string key) */
+  fitKey: { type: String, default: '' },
 })
 
 const emit = defineEmits(['pick'])
@@ -29,7 +36,11 @@ let fromMarker = null
 let toMarker = null
 let routeGlow = null
 let routeLine = null
+let driverRouteGlow = null
+let driverRouteLine = null
+let trackingMarker = null
 const driverMarkers = new Map()
+let lastFitKey = ''
 
 const pickHint = computed(() => {
   if (props.pickMode === 'from') return 'Haritaya dokun — başlangıç noktası'
@@ -114,20 +125,61 @@ function clearRouteLayers() {
     map.removeLayer(routeLine)
     routeLine = null
   }
+  if (driverRouteGlow) {
+    map.removeLayer(driverRouteGlow)
+    driverRouteGlow = null
+  }
+  if (driverRouteLine) {
+    map.removeLayer(driverRouteLine)
+    driverRouteLine = null
+  }
+}
+
+function renderTrackingDriver() {
+  if (!map) return
+  const d = props.trackingDriver
+  if (
+    !d ||
+    !Number.isFinite(Number(d.lat)) ||
+    !Number.isFinite(Number(d.lng))
+  ) {
+    if (trackingMarker) {
+      map.removeLayer(trackingMarker)
+      trackingMarker = null
+    }
+    return
+  }
+
+  const latLng = [Number(d.lat), Number(d.lng)]
+  const popup = `<div class="adago-popup"><strong>${d.name || 'Sürücü'}</strong></div>`
+
+  if (trackingMarker) {
+    trackingMarker.setLatLng(latLng)
+    trackingMarker.setPopupContent(popup)
+  } else {
+    trackingMarker = L.marker(latLng, {
+      icon: carIcon(),
+      zIndexOffset: 400,
+    })
+      .addTo(map)
+      .bindPopup(popup)
+  }
 }
 
 function renderDrivers() {
   if (!map) return
   const seen = new Set()
 
-  // Yalnızca prop — mock / random / fallback üretme
-  const list = (props.drivers || []).filter((driver) => {
-    if (!driver || driver.id == null) return false
-    if (!Number.isFinite(Number(driver.lat)) || !Number.isFinite(Number(driver.lng))) {
-      return false
-    }
-    return true
-  })
+  // Aktif takip varken diğer online sürücü marker'larını gösterme
+  const list = props.trackingDriver
+    ? []
+    : (props.drivers || []).filter((driver) => {
+        if (!driver || driver.id == null) return false
+        if (!Number.isFinite(Number(driver.lat)) || !Number.isFinite(Number(driver.lng))) {
+          return false
+        }
+        return true
+      })
 
   for (const driver of list) {
     seen.add(driver.id)
@@ -160,6 +212,8 @@ function renderDrivers() {
       driverMarkers.delete(id)
     }
   }
+
+  renderTrackingDriver()
 }
 
 function renderOverlays({ fit = true } = {}) {
@@ -188,7 +242,8 @@ function renderOverlays({ fit = true } = {}) {
     boundsPoints.push([props.toCoords.lat, props.toCoords.lng])
   }
 
-  if (props.route?.length > 1) {
+  // Ana A→B ride rotası (idle / completed)
+  if (!props.driverRoute?.length && props.route?.length > 1) {
     routeGlow = L.polyline(props.route, {
       color: '#ffffff',
       weight: 10,
@@ -208,9 +263,47 @@ function renderOverlays({ fit = true } = {}) {
     boundsPoints.push(...props.route)
   }
 
+  // Canlı takip rotası (driver → pickup/destination)
+  if (props.driverRoute?.length > 1) {
+    driverRouteGlow = L.polyline(props.driverRoute, {
+      color: '#ffffff',
+      weight: 10,
+      opacity: 0.9,
+      lineJoin: 'round',
+      lineCap: 'round',
+    }).addTo(map)
+
+    driverRouteLine = L.polyline(props.driverRoute, {
+      color: '#0A1628',
+      weight: 5,
+      opacity: 1,
+      dashArray: '8 10',
+      lineJoin: 'round',
+      lineCap: 'round',
+    }).addTo(map)
+
+    boundsPoints.push(...props.driverRoute)
+  }
+
+  if (
+    props.trackingDriver &&
+    Number.isFinite(Number(props.trackingDriver.lat)) &&
+    Number.isFinite(Number(props.trackingDriver.lng))
+  ) {
+    boundsPoints.push([
+      Number(props.trackingDriver.lat),
+      Number(props.trackingDriver.lng),
+    ])
+  }
+
   renderDrivers()
 
-  if (!fit) return
+  // fitKey değişince veya açıkça fit istendiğinde; canlı GPS'te zoom korunur
+  const fitKeyChanged = Boolean(props.fitKey && props.fitKey !== lastFitKey)
+  if (props.fitKey) lastFitKey = props.fitKey
+  const shouldFit = fit || fitKeyChanged
+
+  if (!shouldFit) return
 
   const sheetPad = window.innerWidth < 960 ? 220 : 48
 
@@ -251,6 +344,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('resize', invalidate)
   driverMarkers.clear()
+  trackingMarker = null
   if (map) {
     map.remove()
     map = null
@@ -262,14 +356,28 @@ function invalidate() {
 }
 
 watch(
-  () => [props.fromCoords, props.toCoords, props.route],
+  () => [props.fromCoords, props.toCoords, props.route, props.fitKey],
   () => renderOverlays({ fit: true }),
+  { deep: true },
+)
+
+watch(
+  () => props.driverRoute,
+  () => renderOverlays({ fit: false }),
   { deep: true },
 )
 
 watch(
   () => props.drivers,
   () => renderDrivers(),
+  { deep: true },
+)
+
+watch(
+  () => props.trackingDriver,
+  () => {
+    renderTrackingDriver()
+  },
   { deep: true },
 )
 
