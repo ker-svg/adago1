@@ -7,6 +7,21 @@ import { useAuthStore } from '@/stores/authStore'
 
 import './assets/main.css'
 
+/** Eski LocalStorage nearbyDrivers — Passenger haritasına sızmasın */
+try {
+  const key = 'adago-state-v1'
+  const raw = localStorage.getItem(key)
+  if (raw) {
+    const parsed = JSON.parse(raw)
+    if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'nearbyDrivers')) {
+      delete parsed.nearbyDrivers
+      localStorage.setItem(key, JSON.stringify(parsed))
+    }
+  }
+} catch {
+  // ignore
+}
+
 const app = createApp(App)
 const pinia = createPinia()
 

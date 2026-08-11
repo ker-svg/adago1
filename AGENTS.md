@@ -92,6 +92,10 @@ RLS sıkılaştırma (doğrudan client UPDATE/INSERT kapalı; lifecycle yalnız 
 
 SQL: `supabase/migrations/003_1_rides_rls_hardening.sql`
 
+Yolculuk geçmişi (passenger/driver/admin; kaynak `rides`):
+
+SQL: `supabase/migrations/003_2_ride_history.sql`
+
 Admin kurulum: `supabase/ADMIN_SETUP.md`
 
 ### Aşama 4 (henüz değil)
@@ -177,7 +181,9 @@ Komisyon: `gross_fare * 0.05` → `commission_amount`; `driver_net_amount = gros
 * `/admin` — Admin paneli (yalnız `admin`)
 * `/role` — Hesap rolü özeti / panele yönlendirme
 * `/passenger` — Yolcu harita paneli (yalnız `passenger`)
+* `/passenger/history` — Yolcu yolculuk geçmişi
 * `/driver` — Sürücü harita paneli (yalnız `driver`)
+* `/driver/history` — Sürücü yolculuk geçmişi
 * `/driver-onboarding` — Sürücü araç kaydı (yalnız `driver`, araç yoksa zorunlu)
 * `/profile` — Profil (login gerekli)
 
@@ -197,6 +203,7 @@ Komisyon: `gross_fare * 0.05` → `commission_amount`; `driver_net_amount = gros
 10. Passenger Realtime: `drivers` postgres_changes
 11. Supabase `rides` + lifecycle RPC + %5 komisyon
 12. Admin paneli (RBAC + RLS + finans özeti)
+13. Yolculuk geçmişi (passenger/driver + admin kullanıcı/sürücü geçmişi)
 
 ---
 
@@ -204,7 +211,7 @@ Komisyon: `gross_fare * 0.05` → `commission_amount`; `driver_net_amount = gros
 
 * Vue 3 Composition API + `script setup`
 * Component bazlı mimari
-* Mevcut store yapısı korunmalı (`authStore` + `rideStore` + `driverStore` + `adminStore`)
+* Mevcut store yapısı korunmalı (`authStore` + `rideStore` + `driverStore` + `adminStore` + `historyStore`)
 * Yeni özellikler mümkün olduğunca ayrı component olarak eklenmeli
 * Responsive tasarım korunmalı
 * Dosya isimleri anlamlı olmalı
@@ -221,6 +228,7 @@ src/
     RegisterView.vue
     AdminLoginView.vue
     AdminView.vue
+    HistoryView.vue
     RoleSelectView.vue
     PassengerView.vue
     DriverView.vue
@@ -242,6 +250,7 @@ src/
     rideStore.js
     driverStore.js
     adminStore.js
+    historyStore.js
   lib/
     supabase.js
   data/
@@ -260,6 +269,8 @@ supabase/
     002_drivers_vehicles.sql
     002_5_live_drivers.sql
     003_rides_admin_commission.sql
+    003_1_rides_rls_hardening.sql
+    003_2_ride_history.sql
 ```
 
 ---

@@ -104,6 +104,69 @@ export function qualifiesForPassengerMap(driver) {
   return true
 }
 
+const GEO_OPTIONS = {
+  enableHighAccuracy: true,
+  timeout: 15_000,
+  maximumAge: 5_000,
+}
+
+const MSG_SECURE =
+  'Konum özelliği yalnızca güvenli HTTPS bağlantısında kullanılabilir.'
+const MSG_UNSUPPORTED =
+  'Bu cihaz veya tarayıcı konum özelliğini desteklemiyor.'
+const MSG_DENIED =
+  'Konum izni tarayıcı tarafından engellenmiş. Tarayıcı adres çubuğundaki site izinlerinden Konum → İzin Ver seçeneğini açın.'
+const MSG_PERMISSION =
+  'Konum izni verilmedi.'
+const MSG_UNAVAILABLE =
+  'Konum bilgisi alınamıyor. GPS veya konum servislerinizi kontrol edin.'
+const MSG_TIMEOUT =
+  'Konum alınırken zaman aşımı oluştu. Tekrar deneyin.'
+
+function assertGeolocationAvailable() {
+  if (typeof window !== 'undefined' && window.isSecureContext === false) {
+    throw new Error(MSG_SECURE)
+  }
+  if (!('geolocation' in navigator)) {
+    throw new Error(MSG_UNSUPPORTED)
+  }
+}
+
+async function queryGeolocationPermission() {
+  try {
+    if (!navigator.permissions?.query) return 'unknown'
+    const status = await navigator.permissions.query({ name: 'geolocation' })
+    return status?.state || 'unknown'
+  } catch {
+    // Safari vb. Permissions API desteklemeyebilir
+    return 'unknown'
+  }
+}
+
+function mapGeolocationError(err) {
+  const code = err?.code
+  console.warn('[GPS] geolocation error', code, err?.message)
+  if (code === 1) return MSG_PERMISSION
+  if (code === 2) return MSG_UNAVAILABLE
+  if (code === 3) return MSG_TIMEOUT
+  return 'Konum alınamadı.'
+}
+
+function getCurrentPositionOnce() {
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        })
+      },
+      (err) => reject(new Error(mapGeolocationError(err))),
+      GEO_OPTIONS,
+    )
+  })
+}
+
 export const useDriverStore = defineStore('driver', () => {
   const authStore = useAuthStore()
 
@@ -115,6 +178,8 @@ export const useDriverStore = defineStore('driver', () => {
   const errorMessage = ref('')
   const locationError = ref('')
   const locationSharing = ref(false)
+  /** İzin denied / engelli — DriverView yardım kartı */
+  const locationPermissionBlocked = ref(false)
 
   const onlineDrivers = ref([])
   const onlineDriversLoading = ref(false)
@@ -166,6 +231,7 @@ export const useDriverStore = defineStore('driver', () => {
     errorMessage.value = ''
     locationError.value = ''
     locationSharing.value = false
+    locationPermissionBlocked.value = false
     onlineDrivers.value = []
     onlineDriversError.value = ''
   }
@@ -211,7 +277,8 @@ export const useDriverStore = defineStore('driver', () => {
       loaded.value = true
 
       if (driver.value?.isOnline) {
-        startLocationWatch()
+        // Sayfa yenileme: izin granted ise watch devam; denied ise offline'a düş
+        void resumeOnlineAfterReload()
       } else {
         stopLocationWatch()
       }
@@ -294,6 +361,34 @@ export const useDriverStore = defineStore('driver', () => {
     }
   }
 
+  async function forceOfflineLocal(message) {
+    stopLocationWatch()
+    locationSharing.value = false
+    if (message) {
+      locationError.value = message
+      locationPermissionBlocked.value =
+        message === MSG_DENIED || message === MSG_PERMISSION
+    }
+    if (!driver.value?.id) return null
+
+    const { data, error } = await supabase
+      .from('drivers')
+      .update({
+        is_online: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', driver.value.id)
+      .select('*')
+      .single()
+    if (error) throw error
+    driver.value = mapDriver(data)
+    return driver.value
+  }
+
+  /**
+   * Online: önce GPS (user gesture) → sonra is_online=true + konum yaz.
+   * GPS yoksa online olunmaz.
+   */
   async function setOnline(nextOnline) {
     if (!driver.value?.id) {
       throw new Error('Önce sürücü onboarding tamamlanmalı.')
@@ -302,76 +397,131 @@ export const useDriverStore = defineStore('driver', () => {
     saving.value = true
     errorMessage.value = ''
     locationError.value = ''
+    locationPermissionBlocked.value = false
     try {
-      if (nextOnline) {
-        if (!('geolocation' in navigator)) {
-          throw new Error('Tarayıcın konum (GPS) desteklemiyor.')
-        }
+      if (!nextOnline) {
+        stopLocationWatch()
+        const { data, error } = await supabase
+          .from('drivers')
+          .update({
+            is_online: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', driver.value.id)
+          .select('*')
+          .single()
+        if (error) throw error
+        driver.value = mapDriver(data)
+        return driver.value
       }
 
+      assertGeolocationAvailable()
+      console.info('[GPS] secureContext', window.isSecureContext)
+
+      const permission = await queryGeolocationPermission()
+      console.info('[GPS] permission', permission)
+      if (permission === 'denied') {
+        locationPermissionBlocked.value = true
+        throw new Error(MSG_DENIED)
+      }
+
+      // User gesture içinde ilk GPS — izin popup burada tetiklenir
+      const coords = await getCurrentPositionOnce()
+      console.info('[GPS] position received', coords.lat, coords.lng)
+
+      const nowIso = new Date().toISOString()
       const { data, error } = await supabase
         .from('drivers')
         .update({
-          is_online: Boolean(nextOnline),
-          updated_at: new Date().toISOString(),
+          is_online: true,
+          last_lat: coords.lat,
+          last_lng: coords.lng,
+          last_location_at: nowIso,
+          updated_at: nowIso,
         })
         .eq('id', driver.value.id)
         .select('*')
         .single()
-      if (error) throw error
+      if (error) {
+        console.warn('[GPS] Supabase update error', error)
+        throw error
+      }
+      console.info('[GPS] Supabase update success')
 
       driver.value = mapDriver(data)
-
-      if (nextOnline) {
-        startLocationWatch()
-      } else {
-        stopLocationWatch()
-      }
-
+      lastUploadAt = Date.now()
+      lastUploadedCoords = { lat: coords.lat, lng: coords.lng }
+      startLocationWatch()
       return driver.value
     } catch (err) {
-      errorMessage.value = mapAuthError(err)
-      throw new Error(errorMessage.value)
+      const msg = err?.message || mapAuthError(err) || 'Çevrimiçi olunamadı.'
+      locationError.value = msg
+      locationPermissionBlocked.value =
+        msg === MSG_DENIED || msg === MSG_PERMISSION || msg.includes('engellenmiş')
+      errorMessage.value = msg
+      // GPS başarısızsa online kalma
+      stopLocationWatch()
+      throw new Error(msg)
     } finally {
       saving.value = false
     }
   }
 
+  async function resumeOnlineAfterReload() {
+    try {
+      assertGeolocationAvailable()
+      const permission = await queryGeolocationPermission()
+      console.info('[GPS] resume permission', permission)
+      if (permission === 'denied') {
+        await forceOfflineLocal(MSG_DENIED)
+        return
+      }
+      // granted / prompt / unknown — watch ile devam (popup yalnız gerekirse)
+      startLocationWatch()
+    } catch (err) {
+      try {
+        await forceOfflineLocal(err?.message || MSG_UNAVAILABLE)
+      } catch {
+        stopLocationWatch()
+        locationError.value = err?.message || MSG_UNAVAILABLE
+      }
+    }
+  }
+
   function startLocationWatch() {
-    if (!('geolocation' in navigator)) {
-      locationError.value = 'Tarayıcın konum (GPS) desteklemiyor.'
+    try {
+      assertGeolocationAvailable()
+    } catch (err) {
+      locationError.value = err.message
       locationSharing.value = false
+      locationPermissionBlocked.value = err.message === MSG_SECURE
       return
     }
 
     stopLocationWatch(false)
     locationError.value = ''
+    locationPermissionBlocked.value = false
     locationSharing.value = true
 
     watchId = navigator.geolocation.watchPosition(
       (pos) => {
         locationSharing.value = true
         locationError.value = ''
+        locationPermissionBlocked.value = false
+        console.info('[GPS] watch position')
         void maybeUploadLocation(pos.coords.latitude, pos.coords.longitude)
       },
       (err) => {
         locationSharing.value = false
-        if (err?.code === 1) {
-          locationError.value =
-            'Konum izni reddedildi. Tarayıcı ayarlarından konum iznini aç.'
-        } else if (err?.code === 2) {
-          locationError.value = 'Konum alınamadı. GPS / ağ konumunu kontrol et.'
-        } else if (err?.code === 3) {
-          locationError.value = 'Konum zaman aşımına uğradı. Tekrar dene.'
-        } else {
-          locationError.value = 'Konum alınamadı.'
+        const msg = mapGeolocationError(err)
+        locationError.value = err?.code === 1 ? MSG_DENIED : msg
+        locationPermissionBlocked.value = err?.code === 1
+        // İzin reddedilirse online'ı kapat
+        if (err?.code === 1 && driver.value?.isOnline) {
+          void forceOfflineLocal(MSG_DENIED).catch(() => {})
         }
       },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 2000,
-        timeout: 15000,
-      },
+      GEO_OPTIONS,
     )
   }
 
@@ -604,6 +754,7 @@ export const useDriverStore = defineStore('driver', () => {
     errorMessage,
     locationError,
     locationSharing,
+    locationPermissionBlocked,
     onlineDrivers,
     onlineDriversLoading,
     onlineDriversError,

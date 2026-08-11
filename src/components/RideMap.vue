@@ -120,14 +120,14 @@ function renderDrivers() {
   if (!map) return
   const seen = new Set()
 
-  // Yalnızca prop — mock üretme / fallback yok
-  const list = (props.drivers || []).filter(
-    (driver) =>
-      driver &&
-      driver.id != null &&
-      Number.isFinite(Number(driver.lat)) &&
-      Number.isFinite(Number(driver.lng)),
-  )
+  // Yalnızca prop — mock / random / fallback üretme
+  const list = (props.drivers || []).filter((driver) => {
+    if (!driver || driver.id == null) return false
+    if (!Number.isFinite(Number(driver.lat)) || !Number.isFinite(Number(driver.lng))) {
+      return false
+    }
+    return true
+  })
 
   for (const driver of list) {
     seen.add(driver.id)

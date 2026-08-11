@@ -6,8 +6,8 @@
           {{ initials }}
         </div>
 
-        <h1 class="name">{{ profile.name }}</h1>
-        <p class="role">{{ isPassenger ? 'Yolcu profili' : 'Sürücü profili' }}</p>
+        <h1 class="name">{{ displayName }}</h1>
+        <p class="role">{{ roleText }}</p>
 
         <template v-if="isPassenger">
           <div class="info-row">
@@ -16,15 +16,19 @@
           </div>
           <div class="info-row">
             <span>Toplam yolculuk</span>
-            <strong>{{ profile.totalTrips }}</strong>
+            <strong>{{ historyStats?.totalRides ?? profile.totalTrips }}</strong>
           </div>
           <div class="info-row">
             <span>Tamamlanan</span>
-            <strong>{{ profile.completedTrips }}</strong>
+            <strong>{{ historyStats?.completedRides ?? profile.completedTrips }}</strong>
+          </div>
+          <div class="info-row">
+            <span>İptal edilen</span>
+            <strong>{{ historyStats?.cancelledRides ?? 0 }}</strong>
           </div>
         </template>
 
-        <template v-else>
+        <template v-else-if="isDriver">
           <div class="info-row">
             <span>Araç</span>
             <strong>{{ vehicleDisplay }}</strong>
@@ -43,16 +47,38 @@
           </div>
           <div class="info-row">
             <span>Tamamlanan yolculuk</span>
-            <strong>{{ completedDisplay }}</strong>
+            <strong>{{ historyStats?.completedRides ?? completedDisplay }}</strong>
+          </div>
+          <div class="info-row">
+            <span>Toplam brüt</span>
+            <strong>{{ formatMoney(historyStats?.totalGross) }}</strong>
+          </div>
+          <div class="info-row">
+            <span>AdaGo komisyonu</span>
+            <strong>{{ formatMoney(historyStats?.totalCommission) }}</strong>
+          </div>
+          <div class="info-row">
+            <span>Toplam net kazanç</span>
+            <strong>{{ formatMoney(historyStats?.totalNet) }}</strong>
           </div>
         </template>
 
         <v-btn
-          class="mt-6"
+          class="mt-5"
           color="primary"
           variant="flat"
           block
-          :to="isPassenger ? '/passenger' : '/driver'"
+          :to="historyPath"
+        >
+          Yolculuk Geçmişim
+        </v-btn>
+
+        <v-btn
+          class="mt-3"
+          color="primary"
+          variant="tonal"
+          block
+          :to="mapPath"
         >
           Haritaya Dön
         </v-btn>
@@ -62,20 +88,43 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 import { useDriverStore } from '@/stores/driverStore'
+import { useHistoryStore } from '@/stores/historyStore'
 import { useRideStore } from '@/stores/rideStore'
 
+const router = useRouter()
 const authStore = useAuthStore()
 const rideStore = useRideStore()
 const driverStore = useDriverStore()
+const historyStore = useHistoryStore()
 
-const isPassenger = computed(() => authStore.currentRole !== 'driver')
+const historyStats = ref(null)
+
+const isPassenger = computed(() => authStore.currentRole === 'passenger')
+const isDriver = computed(() => authStore.currentRole === 'driver')
 
 const profile = computed(() =>
   isPassenger.value ? rideStore.passengerProfile : rideStore.driverProfile,
 )
+
+const displayName = computed(
+  () => authStore.currentUser?.name || profile.value.name || 'Kullanıcı',
+)
+
+const roleText = computed(() => {
+  if (isPassenger.value) return 'Yolcu profili'
+  if (isDriver.value) return 'Sürücü profili'
+  return 'Profil'
+})
+
+const historyPath = computed(() =>
+  isDriver.value ? '/driver/history' : '/passenger/history',
+)
+
+const mapPath = computed(() => (isDriver.value ? '/driver' : '/passenger'))
 
 const vehicleDisplay = computed(() => {
   if (driverStore.vehicleLabel && driverStore.vehicleLabel !== '—') {
@@ -103,7 +152,7 @@ const completedDisplay = computed(
 )
 
 const initials = computed(() => {
-  const parts = (profile.value.name || 'U').split(' ')
+  const parts = (displayName.value || 'U').split(' ')
   return parts
     .slice(0, 2)
     .map((p) => p[0])
@@ -111,16 +160,29 @@ const initials = computed(() => {
     .toUpperCase()
 })
 
+function formatMoney(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return `${n.toLocaleString('tr-TR', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })} ₺`
+}
+
 onMounted(async () => {
   if (authStore.currentRole === 'admin') {
+    router.replace('/admin')
     return
   }
+  if (!isPassenger.value && !isDriver.value) return
+
   try {
-    await rideStore.fetchMyRides()
+    historyStats.value = await historyStore.fetchMyStats()
   } catch {
-    // Profil yine de temel bilgileri gösterir
+    historyStats.value = null
   }
-  if (!isPassenger.value) {
+
+  if (isDriver.value) {
     try {
       await driverStore.ensureLoaded()
     } catch {

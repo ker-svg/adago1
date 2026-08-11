@@ -80,11 +80,12 @@
                   <th>Ad Soyad</th>
                   <th>Rol</th>
                   <th>Kayıt tarihi</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="adminStore.users.length === 0">
-                  <td colspan="3" class="empty">Kayıtlı kullanıcı yok.</td>
+                  <td colspan="4" class="empty">Kayıtlı kullanıcı yok.</td>
                 </tr>
                 <tr v-for="user in adminStore.users" :key="user.id">
                   <td>{{ user.fullName }}</td>
@@ -92,6 +93,19 @@
                     <span class="pill" :class="user.role">{{ roleLabel(user.role) }}</span>
                   </td>
                   <td>{{ formatDate(user.createdAt) }}</td>
+                  <td>
+                    <v-btn
+                      v-if="user.role !== 'admin'"
+                      size="small"
+                      variant="tonal"
+                      color="primary"
+                      :loading="historyLoadingId === user.id"
+                      @click="openUserHistory(user)"
+                    >
+                      Geçmişi Gör
+                    </v-btn>
+                    <span v-else class="muted">—</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -111,11 +125,12 @@
                   <th>Araç</th>
                   <th>Plaka</th>
                   <th>Son konum</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="adminStore.drivers.length === 0">
-                  <td colspan="7" class="empty">Kayıtlı sürücü yok.</td>
+                  <td colspan="8" class="empty">Kayıtlı sürücü yok.</td>
                 </tr>
                 <tr v-for="driver in adminStore.drivers" :key="driver.id">
                   <td>{{ driver.fullName }}</td>
@@ -134,6 +149,17 @@
                   </td>
                   <td>{{ driver.plate }}</td>
                   <td>{{ formatDate(driver.lastLocationAt) }}</td>
+                  <td>
+                    <v-btn
+                      size="small"
+                      variant="tonal"
+                      color="primary"
+                      :loading="historyLoadingId === driver.id"
+                      @click="openDriverHistory(driver)"
+                    >
+                      Yolculuklar
+                    </v-btn>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -267,6 +293,109 @@
         </section>
       </template>
     </main>
+
+    <v-dialog v-model="historyDialog" max-width="920" scrollable>
+      <v-card class="history-dialog">
+        <v-card-title class="dialog-title">
+          {{ historyTitle }}
+        </v-card-title>
+        <v-card-subtitle v-if="historyStore.adminUserStats">
+          {{ roleLabel(historyStore.adminUserStats.role) }}
+          · Toplam {{ historyStore.adminUserStats.totalRides }}
+          · Tamamlanan {{ historyStore.adminUserStats.completedRides }}
+          · İptal {{ historyStore.adminUserStats.cancelledRides }}
+          <template v-if="historyStore.adminUserStats.role === 'driver'">
+            · Brüt {{ formatMoney(historyStore.adminUserStats.totalGross) }}
+            · AdaGo {{ formatMoney(historyStore.adminUserStats.totalCommission) }}
+            · Net {{ formatMoney(historyStore.adminUserStats.totalNet) }}
+          </template>
+        </v-card-subtitle>
+
+        <v-card-text>
+          <v-alert
+            v-if="historyStore.adminError"
+            type="error"
+            variant="tonal"
+            class="mb-3"
+          >
+            {{ historyStore.adminError }}
+          </v-alert>
+
+          <div v-if="historyStore.adminLoading" class="loading-box">
+            <v-progress-circular indeterminate color="primary" size="24" />
+            <span>Geçmiş yükleniyor...</span>
+          </div>
+
+          <div
+            v-else-if="historyStore.adminUserHistory.length === 0"
+            class="empty dialog-empty"
+          >
+            Bu kullanıcının henüz yolculuk kaydı yok.
+          </div>
+
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tarih</th>
+                  <th>Rota</th>
+                  <th>Yolcu</th>
+                  <th>Sürücü</th>
+                  <th>Durum</th>
+                  <th>Mesafe</th>
+                  <th>Ücret</th>
+                  <th>Komisyon</th>
+                  <th>Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="ride in historyStore.adminUserHistory"
+                  :key="ride.id"
+                >
+                  <td>{{ formatDate(ride.completedAt || ride.cancelledAt || ride.createdAt) }}</td>
+                  <td>{{ ride.from }} → {{ ride.to }}</td>
+                  <td>{{ ride.passengerName }}</td>
+                  <td>{{ ride.driverName }}</td>
+                  <td>
+                    <span class="pill status">{{ statusLabel(ride.status) }}</span>
+                  </td>
+                  <td>{{ ride.distanceKm != null ? `${ride.distanceKm} km` : '—' }}</td>
+                  <td>
+                    {{
+                      formatMoney(
+                        ride.status === 'completed' && ride.grossFare != null
+                          ? ride.grossFare
+                          : ride.estimatedFare,
+                      )
+                    }}
+                  </td>
+                  <td class="accent">
+                    {{
+                      ride.status === 'completed'
+                        ? formatMoney(ride.commissionAmount)
+                        : '—'
+                    }}
+                  </td>
+                  <td>
+                    {{
+                      ride.status === 'completed'
+                        ? formatMoney(ride.driverNetAmount)
+                        : '—'
+                    }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </v-card-text>
+
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="closeHistory">Kapat</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -275,13 +404,18 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 import { useAdminStore } from '@/stores/adminStore'
+import { useHistoryStore } from '@/stores/historyStore'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const adminStore = useAdminStore()
+const historyStore = useHistoryStore()
 
 const activeTab = ref('dashboard')
 const commissionFilter = ref('all')
+const historyDialog = ref(false)
+const historyTitle = ref('')
+const historyLoadingId = ref(null)
 
 const tabs = [
   { id: 'dashboard', label: 'Dashboard', icon: 'mdi-view-dashboard' },
@@ -341,8 +475,40 @@ async function onCommissionFilter() {
   }
 }
 
+async function openUserHistory(user) {
+  historyLoadingId.value = user.id
+  historyTitle.value = `${user.fullName} — yolculuk geçmişi`
+  historyDialog.value = true
+  try {
+    await historyStore.fetchAdminUserHistory(user.id)
+  } catch {
+    // adminError store'da
+  } finally {
+    historyLoadingId.value = null
+  }
+}
+
+async function openDriverHistory(driver) {
+  historyLoadingId.value = driver.id
+  historyTitle.value = `${driver.fullName} — yolculuklar`
+  historyDialog.value = true
+  try {
+    await historyStore.fetchAdminUserHistory(driver.id)
+  } catch {
+    // adminError store'da
+  } finally {
+    historyLoadingId.value = null
+  }
+}
+
+function closeHistory() {
+  historyDialog.value = false
+  historyStore.clearAdminSelection()
+}
+
 async function handleLogout() {
   adminStore.resetLocal()
+  historyStore.resetLocal()
   try {
     await authStore.signOut()
   } finally {
@@ -629,6 +795,21 @@ th {
 }
 
 .muted {
+  color: #9ca3af;
+}
+
+.history-dialog {
+  border-radius: 18px !important;
+}
+
+.dialog-title {
+  font-weight: 800 !important;
+  color: #0a1628;
+}
+
+.dialog-empty {
+  text-align: center;
+  padding: 28px !important;
   color: #9ca3af;
 }
 

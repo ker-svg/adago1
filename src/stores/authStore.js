@@ -129,6 +129,8 @@ export const useAuthStore = defineStore('auth', () => {
             useDriverStore().resetLocal()
             const { useRideStore } = await import('@/stores/rideStore')
             useRideStore().resetLocal()
+            const { useHistoryStore } = await import('@/stores/historyStore')
+            useHistoryStore().resetLocal()
           }
         })
       }
@@ -239,6 +241,8 @@ export const useAuthStore = defineStore('auth', () => {
       useDriverStore().resetLocal()
       const { useRideStore } = await import('@/stores/rideStore')
       useRideStore().resetLocal()
+      const { useHistoryStore } = await import('@/stores/historyStore')
+      useHistoryStore().resetLocal()
     } catch (err) {
       errorMessage.value = err.message || 'Çıkış başarısız.'
       throw err

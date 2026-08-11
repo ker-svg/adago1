@@ -9,6 +9,7 @@ import LoginView from '@/views/LoginView.vue'
 import RegisterView from '@/views/RegisterView.vue'
 import AdminLoginView from '@/views/AdminLoginView.vue'
 import AdminView from '@/views/AdminView.vue'
+import HistoryView from '@/views/HistoryView.vue'
 import { useAuthStore } from '@/stores/authStore'
 import { useDriverStore } from '@/stores/driverStore'
 
@@ -57,10 +58,22 @@ const router = createRouter({
       meta: { mapPage: true, requiresAuth: true, role: 'passenger' },
     },
     {
+      path: '/passenger/history',
+      name: 'passenger-history',
+      component: HistoryView,
+      meta: { requiresAuth: true, role: 'passenger' },
+    },
+    {
       path: '/driver',
       name: 'driver',
       component: DriverView,
       meta: { mapPage: true, requiresAuth: true, role: 'driver' },
+    },
+    {
+      path: '/driver/history',
+      name: 'driver-history',
+      component: HistoryView,
+      meta: { requiresAuth: true, role: 'driver' },
     },
     {
       path: '/driver-onboarding',
@@ -111,7 +124,11 @@ router.beforeEach(async (to) => {
   // Admin asla yolcu/sürücü paneline düşmesin
   if (
     authStore.currentRole === 'admin' &&
-    (to.name === 'passenger' || to.name === 'driver' || to.name === 'driver-onboarding')
+    (to.name === 'passenger' ||
+      to.name === 'driver' ||
+      to.name === 'driver-onboarding' ||
+      to.name === 'passenger-history' ||
+      to.name === 'driver-history')
   ) {
     return { name: 'admin' }
   }

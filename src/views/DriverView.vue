@@ -6,9 +6,8 @@
         :from-coords="selectedRide?.fromCoords || null"
         :to-coords="selectedRide?.toCoords || null"
         :route="selectedRide?.route || []"
-        :drivers="rideStore.nearbyDrivers"
+        :drivers="[]"
         :interactive="false"
-        :fit-drivers="!selectedRide"
       />
     </div>
 
@@ -17,7 +16,10 @@
         <div>
           <div class="sheet-title">Aktif talepler</div>
           <div class="subtle">
-            {{ rideStore.stats.pending }} bekleyen · {{ rideStore.nearbyDrivers.length }} sürücü online
+            {{ rideStore.stats.pending }} bekleyen talep
+            <span v-if="driverStore.isOnline && driverStore.locationSharing">
+              · konum paylaşılıyor
+            </span>
           </div>
         </div>
         <v-menu>
@@ -74,6 +76,19 @@
       >
         {{ driverStore.locationError }}
       </v-alert>
+
+      <div
+        v-if="driverStore.locationPermissionBlocked"
+        class="gps-help"
+      >
+        <div class="gps-help-title">Konum erişimini açmak için</div>
+        <ol>
+          <li>Tarayıcıdaki kilit / site ayarlarına dokunun</li>
+          <li>Konum → İzin Ver seçin</li>
+          <li>Sayfayı yenileyin</li>
+          <li>Tekrar Çevrimiçi olun</li>
+        </ol>
+      </div>
 
       <v-alert
         v-if="presenceError"
@@ -224,7 +239,6 @@ onMounted(async () => {
   } catch (err) {
     presenceError.value = err?.message || 'Talepler yüklenemedi.'
   }
-  rideStore.startDriverSimulation()
   if (filteredRides.value[0]) {
     selectedId.value = filteredRides.value[0].id
   }
@@ -232,7 +246,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  rideStore.stopDriverSimulation()
   driverStore.stopLocationWatch()
 })
 
@@ -390,6 +403,32 @@ async function handleComplete(rideId) {
   font-size: 0.75rem;
   color: #b45309;
   font-weight: 600;
+}
+
+.gps-help {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.gps-help-title {
+  font-weight: 800;
+  margin-bottom: 6px;
+  color: #9a3412;
+}
+
+.gps-help ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.gps-help li {
+  margin-bottom: 2px;
 }
 
 .ride-item {
