@@ -167,7 +167,7 @@
 
         <div class="ride-item-actions" @click.stop>
           <v-btn
-            v-if="ride.status === RIDE_STATUS.PENDING"
+            v-if="lifecycleAction(ride) === 'accept'"
             size="small"
             color="primary"
             variant="flat"
@@ -177,7 +177,7 @@
             Kabul Et
           </v-btn>
           <v-btn
-            v-if="canMarkArrived(ride)"
+            v-else-if="lifecycleAction(ride) === 'arrived'"
             size="small"
             color="warning"
             variant="flat"
@@ -187,7 +187,7 @@
             Yolcunun Yanına Geldim
           </v-btn>
           <v-btn
-            v-if="canMarkOnboard(ride)"
+            v-else-if="lifecycleAction(ride) === 'onboard'"
             size="small"
             color="primary"
             variant="flat"
@@ -197,7 +197,7 @@
             Yolcu Alındı
           </v-btn>
           <v-btn
-            v-if="canComplete(ride)"
+            v-else-if="lifecycleAction(ride) === 'complete'"
             size="small"
             color="success"
             variant="flat"
@@ -396,26 +396,29 @@ function statusColor(status) {
   }
 }
 
-function canMarkArrived(ride) {
-  return (
+function lifecycleAction(ride) {
+  if (!ride) return null
+  // Her phase için tek buton — aynı anda iki lifecycle aksiyonu yok
+  if (ride.status === RIDE_STATUS.PENDING) return 'accept'
+  if (
     ride.status === RIDE_STATUS.ACCEPTED &&
     ride.tripPhase === TRIP_PHASE.EN_ROUTE
-  )
-}
-
-function canMarkOnboard(ride) {
-  return (
+  ) {
+    return 'arrived'
+  }
+  if (
     ride.status === RIDE_STATUS.ACCEPTED &&
     ride.tripPhase === TRIP_PHASE.ARRIVED
-  )
-}
-
-function canComplete(ride) {
-  return (
+  ) {
+    return 'onboard'
+  }
+  if (
     ride.status === RIDE_STATUS.ACCEPTED &&
-    (ride.tripPhase === TRIP_PHASE.IN_PROGRESS ||
-      ride.tripPhase === TRIP_PHASE.PASSENGER_ONBOARD)
-  )
+    ride.tripPhase === TRIP_PHASE.IN_PROGRESS
+  ) {
+    return 'complete'
+  }
+  return null
 }
 
 function clearDriverEta() {

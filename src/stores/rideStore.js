@@ -417,10 +417,23 @@ export const useRideStore = defineStore('ride', () => {
     return markPassengerOnboard(rideId)
   }
 
+  function assertAssignedDriver(rideId) {
+    if (authStore.currentRole !== 'driver') {
+      throw new Error('Yalnızca sürücü bu işlemi yapabilir')
+    }
+    const uid = authStore.user?.id || authStore.currentUser?.id
+    if (!uid) throw new Error('Giriş gerekli')
+    const ride = rides.value.find((r) => r.id === rideId)
+    if (ride?.driverId && ride.driverId !== uid) {
+      throw new Error('Bu yolculuk size atanmamış')
+    }
+  }
+
   async function markDriverArrived(rideId) {
     saving.value = true
     errorMessage.value = ''
     try {
+      assertAssignedDriver(rideId)
       const { data, error } = await supabase.rpc('mark_driver_arrived', {
         p_ride_id: rideId,
       })
@@ -440,6 +453,7 @@ export const useRideStore = defineStore('ride', () => {
     saving.value = true
     errorMessage.value = ''
     try {
+      assertAssignedDriver(rideId)
       const { data, error } = await supabase.rpc('mark_passenger_onboard', {
         p_ride_id: rideId,
       })
@@ -551,6 +565,7 @@ export const useRideStore = defineStore('ride', () => {
     saving.value = true
     errorMessage.value = ''
     try {
+      assertAssignedDriver(rideId)
       const { data, error } = await supabase.rpc('complete_ride', {
         p_ride_id: rideId,
       })

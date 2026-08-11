@@ -23,6 +23,7 @@
           :live-eta="liveEta"
           :stale-warning="staleGpsWarning"
         >
+          <!-- Lifecycle fazlarını yalnız sürücü değiştirir; yolcu izler -->
           <v-btn
             v-if="canCancel(activeOwnedRide)"
             class="mt-3"
@@ -555,19 +556,19 @@ function isSamePoint(a, b) {
 
 function canCancel(ride) {
   if (isCompleted(ride)) return false
-  // Yolculuk başladıktan sonra iptal yok (onboard / in_progress)
+  // Yolculuk başladıktan sonra iptal yok; faz geçiş butonu yok
   if (
     ride.tripPhase === TRIP_PHASE.PASSENGER_ONBOARD ||
     ride.tripPhase === TRIP_PHASE.IN_PROGRESS
   ) {
     return false
   }
+  // İptal lifecycle fazı değiştirmez; yalnızca erken aşamada izinli
   return (
     ride.tripPhase === TRIP_PHASE.ASSIGNING ||
     ride.tripPhase === TRIP_PHASE.EN_ROUTE ||
     ride.tripPhase === TRIP_PHASE.ARRIVED ||
-    ride.status === RIDE_STATUS.PENDING ||
-    ride.status === RIDE_STATUS.ACCEPTED
+    ride.status === RIDE_STATUS.PENDING
   )
 }
 
